@@ -10,6 +10,14 @@
 
 // Which of the known textures `t` is (by its contents), or -1.
 int texpatch_identify(const NvnTexture *t);
+// The backends' cached marker for `t` (TexBackend.tp): texpatch_identify + 1, or -1 for "checked, none" (0 stays
+// "not checked yet"). Kept until the texture's contents change: identifying compares the data of every texture shaped
+// like a known one, too slow to repeat at every upload check (-1 was stored as 0: every texture without a patch was
+// identified again each time).
+static inline int texpatch_marker(const NvnTexture *t) {
+    int id = texpatch_identify(t);
+    return id >= 0 ? id + 1 : -1;
+}
 // Changes whenever the wanted look of the known textures changes: backends re-upload identified textures when it
 // differs from the value they uploaded with.
 uint32_t texpatch_generation(void);
