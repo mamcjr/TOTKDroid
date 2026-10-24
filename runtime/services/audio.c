@@ -1050,7 +1050,28 @@ SERVICE("audren:u", audren_u) {
         ipc_return_object(resp, service_new("IAudioRenderer", audio_renderer, r));
         break;
     }
-    case 1: OUT(uint64_t, 0) = 0x1000000; resp_size(resp, 8); break;  // GetWorkBufferSize: 16 MB
+    case 1: {  // GetWorkBufferSize(params)
+        // The renderer here mixes in host memory and never touches the work buffer: only the game's heaps see this
+        // size. It was 16 MB for any renderer, which LAS and BOTW had room for; TOTK sizes its sound heap from its
+        // own data (System/HeapSize), and that ran out with 16 MB taken from it - an allocation came back null and
+        // the game wrote through it. Now about what the console asks for these parameters (~1 MB for TOTK's 96
+        // voices): mix buffers, voice, mix, effect, sink and memory pool states, splitters, performance frames and
+        // the command buffer.
+        const uint32_t *p = (const uint32_t *)req->data;
+        uint64_t samples = p[1], mixbufs = p[2], mixes = p[3] + 1ull, voices = p[4], sinks = p[5], effects = p[6];
+        uint64_t perf = p[7], splitters = p[9], dests = p[10];
+#define A64(x) (((x) + 0x3F) & ~0x3Full)
+        uint64_t n = A64(4 * samples * (mixbufs + 6) * 2) + A64(4 * mixbufs * 2) + A64(0x1000 * voices) +
+                     A64(0x940 * mixes + 4 * mixes * mixes) + A64(0x2000 * effects) + A64(0x400 * sinks) +
+                     A64(0x100 * (effects + voices * 4)) + A64(0x60 * splitters + 0xE0 * dests) +
+                     A64(perf ? (perf + 1) * (0x20 + 0x14 * (voices + effects + sinks + mixes + 1)) : 0) +
+                     A64(0x20000 + 0x80 * voices);
+#undef A64
+        OUT(uint64_t, 0) = (n + 0xFFF) & ~0xFFFull;
+        LOG("[audren] GetWorkBufferSize -> %#llx\n", (unsigned long long)OUT(uint64_t, 0));
+        resp_size(resp, 8);
+        break;
+    }
     case 2: case 4: ipc_return_object(resp, service_new("IAudioDevice", audio_device, NULL)); break;
     default: LOG("[audren] cmd %u (ok)\n", req->cmd);
     }
