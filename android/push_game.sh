@@ -9,9 +9,9 @@ cd "$(dirname "$0")/.."
 R=$PWD
 SRC=${1:?usage: android/push_game.sh <folder with exefs/ and romfs/>}
 # (GAME_DEST / GAMELIB_OUT: another game version in its own data root, e.g. 1.6.0 in files/v160 - android/run_v160.sh)
-D=${GAME_DEST:-/sdcard/Android/data/com.botwrecomp.android/files/extracted}
+D=${GAME_DEST:-/sdcard/Android/data/com.totkrecompandroid/files/extracted}
 LIB=${GAMELIB_OUT:-android/out}
-DEV_TMP=/data/local/tmp/botwrecompandroid
+DEV_TMP=/data/local/tmp/totkrecompandroid
 
 SDK=${ANDROID_HOME:-${LOCALAPPDATA:-$HOME}/Android/Sdk}
 SDK=${SDK//\\//}
@@ -36,10 +36,10 @@ if ! adb shell test -s "$D/romfs.bin"; then
     adb shell "$DEV_TMP/romfs_tool" "$D/romfs" "$D/romfs.bin"
 fi
 
-if [ -f "$LIB/botwgame.so" ]; then
-    adb push "$LIB/botwgame.so" "$LIB/botwgame.so.id" "$D/"
+if [ -f "$LIB/totkgame.so" ]; then
+    adb push "$LIB/totkgame.so" "$LIB/totkgame.so.id" "$D/"
 else
-    echo "no $LIB/botwgame.so yet (android/build_gamelib.sh)"
+    echo "no $LIB/totkgame.so yet (android/build_gamelib.sh)"
 fi
 # what adb pushes belongs to the shell user (rwxrws---): readable by the app only once others may read it (the app's
 # own setup makes these files as the app)

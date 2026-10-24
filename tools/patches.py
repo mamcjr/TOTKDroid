@@ -14,7 +14,7 @@ so a wrong build fails here instead of patching the wrong code. Example, from LA
 
     PATCHES[0x7000xxxxxx] = _aspect_load
 
-BOTW v1.0.0 (the code addresses are that build's; docs/BOTW-PORT.md):
+BOTW v1.0.0 (the code addresses are that build's; docs/botw/BOTW-PORT.md):
 - 0x70010c1aa0: act::ClusteredRenderer's teardown (f_70010c1a04) calls the virtual destroy of its display-list heap
   at this+0xc60 without a null check. Its setup (f_70010c084c) sets the "created" flag even when that 7 MB heap
   could not be made - here OpenWorldStage runs ~13 MB short and it never is - so a reload (dying, loading a save)

@@ -7,18 +7,18 @@ plugins {
 
 val repo: File = rootDir.resolve("../..").canonicalFile
 val deps: File = repo.resolve("android/deps/out")  // android/deps/build_deps.sh
-val gen = layout.buildDirectory.dir("generated/botwrecompandroid")
-// The release key: outside the repository, in ~/.botwrecompandroid/keystore.properties (storeFile, storePassword, keyAlias,
+val gen = layout.buildDirectory.dir("generated/totkrecompandroid")
+// The release key: outside the repository, in ~/.totkrecompandroid/keystore.properties (storeFile, storePassword, keyAlias,
 // keyPassword); without it, release builds are signed with the debug key
-val releaseKey: File = File(System.getProperty("user.home"), ".botwrecompandroid/keystore.properties")
+val releaseKey: File = File(System.getProperty("user.home"), ".totkrecompandroid/keystore.properties")
 
 android {
-    namespace = "com.botwrecompandroid"
+    namespace = "com.totkrecompandroid"
     compileSdk = 36
     ndkVersion = "30.0.16248370"
 
     defaultConfig {
-        applicationId = "com.botwrecomp.android"
+        applicationId = "com.totkrecompandroid"
         minSdk = 30
         targetSdk = 36
         versionCode = 3
@@ -28,7 +28,7 @@ android {
         }
         externalNativeBuild {
             cmake {
-                arguments += "-DBOTW_GEN_DIR=${gen.get().asFile.resolve("inc").absolutePath.replace('\\', '/')}"
+                arguments += "-DTOTK_GEN_DIR=${gen.get().asFile.resolve("inc").absolutePath.replace('\\', '/')}"
             }
         }
     }
@@ -87,7 +87,7 @@ android {
 
 // What the native build and the APK need: the SMAA shader as a C string (smaa_hlsl.inc),
 // the prebuilt libraries, and the shipped resources (the start screen's font, the icon).
-val prepareBotwRecompAndroid by tasks.registering {
+val prepareTotkRecompAndroid by tasks.registering {
     val smaa = repo.resolve("third_party/smaa/SMAA.hlsl")
     val font = repo.resolve("third_party/fonts/Baloo2/Baloo2-SemiBold.ttf")
     val icon = repo.resolve("assets/artwork/triforce-icon-v2.png")
@@ -121,7 +121,7 @@ val prepareBotwRecompAndroid by tasks.registering {
         icon.copyTo(out.resolve("res/mipmap-xxxhdpi/ic_launcher.png"), overwrite = true)
         // the game code's builder (docs/las/ANDROID-PORT.md, Fase 6; android/deps/build_gen_deps.sh): its programs and
         // libraries as native libraries (Android runs binaries only from nativeLibraryDir), the rest as assets/gen
-        // (runtime/gamebuild.c; unpacked by BOTWRecompAndroidActivity)
+        // (runtime/gamebuild.c; unpacked by TOTKRecompAndroidActivity)
         val g = deps.resolve("gen")
         if (g.resolve("zig/libzig.so").exists()) {
             val jni = out.resolve("jniLibs/arm64-v8a")
@@ -161,7 +161,7 @@ val prepareBotwRecompAndroid by tasks.registering {
         }
     }
 }
-tasks.named("preBuild") { dependsOn(prepareBotwRecompAndroid) }
+tasks.named("preBuild") { dependsOn(prepareTotkRecompAndroid) }
 tasks.matching { it.name.startsWith("configureCMake") || it.name.startsWith("buildCMake") }.configureEach {
-    dependsOn(prepareBotwRecompAndroid)
+    dependsOn(prepareTotkRecompAndroid)
 }

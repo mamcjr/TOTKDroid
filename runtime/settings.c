@@ -17,14 +17,7 @@
 static const char *settings_file(void) {
     const char *e = getenv("LARECOMP_SETTINGS");
     if (e && *e) return e;
-    static int moved;  // (the project's former name: the player's settings carry over, once)
-    if (!moved) {
-        moved = 1;
-        FILE *f = fopen("botwrecompandroid.ini", "rb");
-        if (f) fclose(f);
-        else rename("botwrecomp.ini", "botwrecompandroid.ini");
-    }
-    return "botwrecompandroid.ini";
+    return "totkrecompandroid.ini";
 }
 
 Settings g_settings = {
@@ -57,11 +50,9 @@ Settings g_settings = {
 #endif
 };
 
-// The game's own text languages: its RomFS carries these per region (regionUS/USen|USes|USfr, regionEU/EUen|EUes|...,
-// regionJP/JPja, regionKR/KRkr, regionTW/TWch, regionCN/CNch), and the game picks one from the system language it
-// reads back (runtime/services/am.c), exactly as it does on the console. Codes as the Switch reports them.
-// Brazilian Portuguese (regionUS/USpt, Pack/Bootup_USpt.pack) came with the game's v1.8.2 (runtime/language.c in
-// SavageWindRecomp); the older versions are told English instead.
+// The system language the game reads back (runtime/services/am.c); it picks its own text from it, exactly as it does
+// on the console. Codes as the Switch reports them. Pokémon Scarlet / Violet has Japanese, English, French, Italian,
+// German, Spanish, Korean and both Chinese: the others (Dutch, Russian, Brazilian Portuguese) are told English.
 const char *const g_language_codes[N_LANGUAGES] = {"auto", "ja", "en-US", "es", "fr", "de", "it", "nl", "ru", "ko",
                                                    "zh-CN", "zh-TW", "pt-BR"};
 const char *const g_language_names[N_LANGUAGES] = {"Auto", "Japanese", "English", "Spanish", "French", "German",
@@ -115,15 +106,13 @@ static const char *host_language(void) {
         if (!strcmp(l, map[i].loc)) return map[i].code;
     if (!strcmp(l, "zh"))  // (TW / HK, Hant: traditional)
         return strstr(e, "TW") || strstr(e, "HK") || strstr(e, "Hant") ? "zh-TW" : "zh-CN";
-    if (!strcmp(l, "pt")) return "pt-BR";  // (the only Portuguese the game has)
     return "en-US";
 }
 
 const char *settings_language(void) {
     int i = g_settings.language;
     const char *code = i > LANG_AUTO && i < N_LANGUAGES ? g_language_codes[i] : host_language();
-    extern int g_game_version;
-    if (!strcmp(code, "pt-BR") && g_game_version && g_game_version < 182) return "en-US";  // (no Portuguese before 1.8.2)
+    if (!strcmp(code, "pt-BR") || !strcmp(code, "nl") || !strcmp(code, "ru")) return "en-US";  // (not in the game)
     return code;
 }
 
@@ -247,7 +236,7 @@ void settings_load(void) {
 void settings_save(void) {
     FILE *f = fopen(SETTINGS_FILE, "w");
     if (!f) { LOG("[settings] cannot write %s\n", SETTINGS_FILE); return; }
-    fprintf(f, "# BOTWRecompAndroid settings (edited from the in-game menu: F1, Esc, or Minus+Plus on a controller)\n");
+    fprintf(f, "# TOTKRecompAndroid settings (edited from the in-game menu: F1, Esc, or Minus+Plus on a controller)\n");
     fprintf(f, "aspect = %s\n", g_settings.aspect == ASPECT_ORIGINAL ? "original" : "unlocked");
     fprintf(f, "fullscreen = %d\n", g_settings.fullscreen);
     fprintf(f, "volume = %.2f\n", g_settings.volume);

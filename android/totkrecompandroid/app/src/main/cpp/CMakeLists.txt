@@ -1,8 +1,8 @@
-# libmain.so: the BOTWRecompAndroid runtime for Android, with the
-# Vulkan backend and the ImGui UI. The game code is not in it: botwgame.so, generated with gen.py --dyn-base and built
+# libmain.so: the TOTKRecompAndroid runtime for Android, with the
+# Vulkan backend and the ImGui UI. The game code is not in it: totkgame.so, generated with gen.py --dyn-base and built
 # from the player's own game files, is loaded at run time (docs/las/ANDROID-PORT.md).
 cmake_minimum_required(VERSION 3.22)
-project(botwrecompandroid C CXX)
+project(totkrecompandroid C CXX)
 
 set(R ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../..)   # the repository
 get_filename_component(R ${R} ABSOLUTE)
@@ -10,11 +10,11 @@ set(DEPS ${R}/android/deps/out)                        # android/deps/build_deps
 if(NOT EXISTS ${DEPS}/lib/libSDL3.so)
     message(FATAL_ERROR "run android/deps/build_deps.sh first")
 endif()
-if(NOT BOTW_GEN_DIR)
-    message(FATAL_ERROR "BOTW_GEN_DIR (the Gradle build's generated files: smaa_hlsl.inc) is not set")
+if(NOT TOTK_GEN_DIR)
+    message(FATAL_ERROR "TOTK_GEN_DIR (the Gradle build's generated files: smaa_hlsl.inc) is not set")
 endif()
 
-include(${R}/android/gamelib_id.cmake)  # (GAMELIB_ID: the same as botwgame.so's, android/gamelib)
+include(${R}/android/gamelib_id.cmake)  # (GAMELIB_ID: the same as totkgame.so's, android/gamelib)
 message(STATUS "GAMELIB_ID ${GAMELIB_ID}")
 
 add_subdirectory(${R}/third_party/libadrenotools ${CMAKE_BINARY_DIR}/adrenotools)
@@ -51,7 +51,7 @@ set_source_files_properties(${R}/runtime/gamelib.c PROPERTIES COMPILE_DEFINITION
 set_source_files_properties(${R}/runtime/gamebuild.c PROPERTIES COMPILE_DEFINITIONS "GAMELIB_ID=\"${GAMELIB_ID}\"")
 
 target_include_directories(main PRIVATE ${R}/runtime ${R}/runtime/nvn ${IMGUI} ${IMGUI}/backends ${DEPS}/include
-                           ${DEPS}/volk ${BOTW_GEN_DIR} ${R}/third_party/smaa/Textures ${R}/android/common)
+                           ${DEPS}/volk ${TOTK_GEN_DIR} ${R}/third_party/smaa/Textures ${R}/android/common)
 target_compile_definitions(main PRIVATE
     VK_NO_PROTOTYPES VK_USE_PLATFORM_ANDROID_KHR IMGUI_IMPL_VULKAN_USE_VOLK   # Vulkan from the loaded driver (volk)
     VMA_STATIC_VULKAN_FUNCTIONS=0 VMA_DYNAMIC_VULKAN_FUNCTIONS=1)

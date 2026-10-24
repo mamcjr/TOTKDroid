@@ -1,6 +1,6 @@
 """Check a BOTW dump: the exefs modules, their build ids (which game version), what each one is, and the romfs.
 
-Usage: botw_dump.py [dump dir]   (default: the only folder under ../Dump, e.g. Dump/01007EF00011E000)
+Usage: totk_dump.py [dump dir]   (default: the only folder under ../Dump, e.g. Dump/01007EF00011E000)
 
 The dump is <dir>/exefs (main, rtld, sdk, subsdk0-3, main.npdm) and <dir>/romfs. Nothing is written.
 """

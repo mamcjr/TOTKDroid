@@ -1,10 +1,10 @@
-// BOTWRecompAndroid on Android: SDL's activity runs the runtime (libmain.so, runtime/main.c). Before the native code starts
+// TOTKRecompAndroid on Android: SDL's activity runs the runtime (libmain.so, runtime/main.c). Before the native code starts
 // this sets up what the desktop finds next to its executable (runtime/platform/android.c, runtime/paths.c):
 // - the shipped resources (assets/res: the start screen's font, the icon) copied to <internal files>/res;
 // - the Vulkan driver: the first driver in <external files>/drivers (a .so, or an adrenotools .zip: Turnip), copied to
 //   internal storage (dlopen refuses external storage) and named in LARECOMP_VK_DRIVER; none there = the system's;
 // - LARECOMP_NATIVE_LIB_DIR: where adrenotools finds its hook libraries;
-// - the game code (botwgame.so + botwgame.so.id, built from the player's own game files: android/build_gamelib.sh) from
+// - the game code (totkgame.so + totkgame.so.id, built from the player's own game files: android/build_gamelib.sh) from
 //   <external files>/extracted to <internal files>/res, where runtime/gamelib.c looks for it next to "the executable".
 // - the game code's builder (docs/las/ANDROID-PORT.md, Fase 6): assets/gen (the generator, its Python's standard library,
 //   zig's headers) unpacked to <internal files>/gen once per app version, named in LARECOMP_GEN_DIR; its programs
@@ -13,10 +13,10 @@
 //   found in it; exefs/ is copied to its version's extracted/ - <external files>/extracted for 1.0.0, v160/ and v182/
 //   inside it for the others, runtime/paths.h - and romfs.bin built there straight from romfs/) and the Vulkan driver
 //   (a .zip copied to the drivers folder).
-// The data root (game files, saves, settings) is <external files>: /sdcard/Android/data/com.botwrecomp.android/files.
+// The data root (game files, saves, settings) is <external files>: /sdcard/Android/data/com.totkrecompandroid/files.
 // While in front it reports the battery and thermal state once a second for the performance overlay
 // (runtime/ui/perf_overlay.mm): apps can't read those in /sys.
-package com.botwrecompandroid;
+package com.totkrecompandroid;
 
 import android.app.Activity;
 import android.content.ContentResolver;
@@ -50,8 +50,8 @@ import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
-public class BOTWRecompAndroidActivity extends SDLActivity {
-    private static final String TAG = "BOTWRecompAndroid";
+public class TOTKRecompAndroidActivity extends SDLActivity {
+    private static final String TAG = "TOTKRecompAndroid";
 
     private final Handler stats = new Handler(Looper.getMainLooper());
     private final Runnable report = new Runnable() {
@@ -74,7 +74,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     private static native void nativeLogFolderPicked(String name);
 
     private static final int REQ_GAME = 0x4c41, REQ_DRIVER = 0x4c42, REQ_MOD = 0x4c46, REQ_LOG = 0x4c47;
-    private static BOTWRecompAndroidActivity self;
+    private static TOTKRecompAndroidActivity self;
     private WatchMapServer watchMap;
 
     @Override
@@ -88,8 +88,8 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             File res = new File(getFilesDir(), "res");
             copyAssets("res", res);
             File games = new File(getExternalFilesDir(null), "extracted");
-            copyIfChanged(new File(games, "botwgame.so"), new File(res, "botwgame.so"));
-            copyIfChanged(new File(games, "botwgame.so.id"), new File(res, "botwgame.so.id"));
+            copyIfChanged(new File(games, "totkgame.so"), new File(res, "totkgame.so"));
+            copyIfChanged(new File(games, "totkgame.so.id"), new File(res, "totkgame.so.id"));
             setenv("LARECOMP_NATIVE_LIB_DIR", getApplicationInfo().nativeLibraryDir);
             File gen = new File(getFilesDir(), "gen");
             unpackGen(gen);
@@ -99,7 +99,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             setenv("LARECOMP_VK_DRIVER", driver != null ? driver.getAbsolutePath() : "");
             // testing: the runtime's LARECOMP_* switches from the launch intent, separated by commas (adb shell drops
             // the quotes around spaces), e.g. LARECOMP_VK_DRIVER= is the system driver:
-            // adb shell am start -n com.botwrecomp.android/com.botwrecompandroid.BOTWRecompAndroidActivity --es env LARECOMP_NO_LAUNCHER=1,LARECOMP_VK_DRIVER=
+            // adb shell am start -n com.totkrecompandroid/com.totkrecompandroid.TOTKRecompAndroidActivity --es env LARECOMP_NO_LAUNCHER=1,LARECOMP_VK_DRIVER=
             String env = getIntent() != null ? getIntent().getStringExtra("env") : null;
             // Opened again from the recent apps, Android hands back that test launch's intent: keep only which game
             // version it ran (a scripted input left in it ignored the touch screen - the menu looked frozen)
@@ -117,9 +117,9 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
                 if (name != null && (!recents || KEEP_FROM_RECENTS.contains(name))) setenv(name, value);
                 // (debugging) the game code built on the phone, out where adb can read it: a crash's host addresses
                 if (env.contains("LARECOMP_EXPORT_GAMELIB")) {
-                    File lib = new File(res, "botwgame.so");
+                    File lib = new File(res, "totkgame.so");
                     if (lib.exists()) try (InputStream in = new FileInputStream(lib)) {
-                        copy(in, new File(getExternalFilesDir(null), "botwgame-export.so"));
+                        copy(in, new File(getExternalFilesDir(null), "totkgame-export.so"));
                     }
                 }
             }
@@ -258,7 +258,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     // The app icon's long-press shortcut (res/xml/shortcuts.xml): the system driver, settings out of reach or not - a
     // custom driver that draws garbage (Turnip_v26.3.0-R6 on an Adreno 830: stripes, the menus unreadable) or crashes.
     // Before the driver loads when it starts the app; a running one (a single instance) drops it and starts again.
-    static final String SYSTEM_DRIVER = "com.botwrecompandroid.action.SYSTEM_DRIVER";
+    static final String SYSTEM_DRIVER = "com.totkrecompandroid.action.SYSTEM_DRIVER";
     // (android/run_ver.sh: the game version a test launch ran, and its own start without the launcher)
     static final List<String> KEEP_FROM_RECENTS = Arrays.asList("LARECOMP_DATA_ROOT", "LARECOMP_GAME_LIB",
             "LARECOMP_SAVE_SEED", "LARECOMP_NO_LAUNCHER");
@@ -312,7 +312,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
                 try {
                     getContentResolver().takePersistableUriPermission(tree,
                         Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-                    getSharedPreferences("botwrecomp", MODE_PRIVATE).edit().putString("logTree", tree.toString()).apply();
+                    getSharedPreferences("totkrecomp", MODE_PRIVATE).edit().putString("logTree", tree.toString()).apply();
                 } catch (Exception e) {
                     Log.e(TAG, "log folder permission", e);
                 }
@@ -324,9 +324,9 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     }
 
     // ---- the log file (Settings > Prelaunch > Driver compatibility, runtime/platform/android.c; LASRecompAndroid's)
-    // goes to a folder the player picks (Android keeps Android/data/ out of reach of file managers): botwrecomp-log.txt,
-    // the run before's kept as botwrecomp-log-previous.txt, both openable on the phone and sendable with a bug report
-    private static final String LOG_NAME = "botwrecomp-log.txt", LOG_PREVIOUS = "botwrecomp-log-previous.txt";
+    // goes to a folder the player picks (Android keeps Android/data/ out of reach of file managers): totkrecomp-log.txt,
+    // the run before's kept as totkrecomp-log-previous.txt, both openable on the phone and sendable with a bug report
+    private static final String LOG_NAME = "totkrecomp-log.txt", LOG_PREVIOUS = "totkrecomp-log-previous.txt";
 
     public static void pickLogFolder() {
         self.runOnUiThread(() -> {
@@ -340,7 +340,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     }
 
     private static Uri logTree() {  // the picked folder while the app may still write there (and it's still there)
-        String s = self.getSharedPreferences("botwrecomp", MODE_PRIVATE).getString("logTree", null);
+        String s = self.getSharedPreferences("totkrecomp", MODE_PRIVATE).getString("logTree", null);
         if (s == null) return null;
         Uri tree = Uri.parse(s);
         boolean allowed = false;
@@ -356,11 +356,11 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         }
     }
 
-    // The folder's name for the settings page ("Download/BOTWRecomp"); "" with none
+    // The folder's name for the settings page ("Download/TOTKRecomp"); "" with none
     public static String logFolderName() {
         Uri tree = logTree();
         if (tree == null) return "";
-        String id = DocumentsContract.getTreeDocumentId(tree);  // e.g. "primary:Download/BOTWRecomp"
+        String id = DocumentsContract.getTreeDocumentId(tree);  // e.g. "primary:Download/TOTKRecomp"
         int colon = id.indexOf(':');
         String path = colon >= 0 ? id.substring(colon + 1) : id;
         return path.isEmpty() ? "/" : path;
@@ -426,18 +426,18 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     // levels below it (as runtime/ui/launcher.mm find_game)
     private Doc exefs, romfs;
     private boolean packages;
-    // A game code built already (botwgame.so with its .id, and .game: the game version it's for - a package made on a
+    // A game code built already (totkgame.so with its .id, and .game: the game version it's for - a package made on a
     // PC from the same files), used instead of building it on the phone when it's for this version and this app
     private Doc preLib, preId, preGame;
 
     private void find(Uri tree, Doc dir, int depth) {
         if (depth > 4 || (exefs != null && romfs != null)) return;
         List<Doc> kids = children(tree, dir.id);
-        if (preLib == null && named(kids, "botwgame.so") != null && named(kids, "botwgame.so.id") != null &&
-            named(kids, "botwgame.so.game") != null) {
-            preLib = named(kids, "botwgame.so");
-            preId = named(kids, "botwgame.so.id");
-            preGame = named(kids, "botwgame.so.game");
+        if (preLib == null && named(kids, "totkgame.so") != null && named(kids, "totkgame.so.id") != null &&
+            named(kids, "totkgame.so.game") != null) {
+            preLib = named(kids, "totkgame.so");
+            preId = named(kids, "totkgame.so.id");
+            preGame = named(kids, "totkgame.so.game");
         }
         if (exefs == null && named(kids, "main") != null && named(kids, "main.npdm") != null) exefs = dir;
         Doc rc = named(kids, "Pack");
@@ -559,8 +559,8 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             copyTree(tree, exefs, new File(games, "exefs"));
             if (preLib != null && Integer.toString(version).equals(readText(tree, preGame).trim())) {
                 // (the native side checks its id against this app's and builds it on the phone when they differ)
-                copyDoc(tree, preId, new File(games, "botwgame.so.id"));
-                copyDoc(tree, preLib, new File(games, "botwgame.so"));
+                copyDoc(tree, preId, new File(games, "totkgame.so.id"));
+                copyDoc(tree, preLib, new File(games, "totkgame.so"));
                 Log.i(TAG, "game code from the picked folder: " + preLib.size + " bytes");
             }
             nativeImportProgress(copied, total);

@@ -1,5 +1,5 @@
 // What the runtime asks about the game's own state (menus, logs, the renderers). Nothing of BOTW's state is mapped
-// yet: these say "not in play" until hooks into the game's code find out (docs/BOTW-PORT.md).
+// yet: these say "not in play" until hooks into the game's code find out (docs/botw/BOTW-PORT.md).
 #include <stdint.h>
 
 #include "../hle.h"

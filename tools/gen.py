@@ -478,7 +478,7 @@ class Module:
             out.append('    __attribute__((musttail)) return rt_dispatch(c);')
         out.append('}')
         if lifter.DYN_BASE and any(GB_USE.search(l) for l in out):
-            out.insert(1, '    const uint64_t GB = botwgame_gb;')
+            out.insert(1, '    const uint64_t GB = totkgame_gb;')
         self._refs = refs
         return out
 
@@ -628,7 +628,7 @@ def generate(name, nso, base, outdir, opts):
         path = os.path.join(outdir, f'{name}_{nchunks:03d}.c')
         text = ['#include "cpu.h"\n' + ('#include "simd.h"\n' if m.lifter.sc else '')]
         if opts.dyn_base:
-            text += ['extern __attribute__((visibility("hidden"))) uint64_t botwgame_gb;\n']
+            text += ['extern __attribute__((visibility("hidden"))) uint64_t totkgame_gb;\n']
         if any('rt_setjmp_slot(' in l for l in body):
             text += ['#include <setjmp.h>\njmp_buf *rt_setjmp_slot(Cpu *c, uint64_t gbuf);\n']
         text += [f'void {fname(r)}(Cpu *c);\n' for r in sorted(refs)]
@@ -657,9 +657,9 @@ def generate(name, nso, base, outdir, opts):
         f.write(f'const uint64_t {name}_fn_count = {len(order)};\n')
         if opts.dyn_base:  # (in each module's table, weak: main and sdk share one)
             f.write("// the guest window's start (--dyn-base): the runtime sets it before any game code runs\n")
-            f.write(f'__attribute__((weak, visibility("hidden"))) uint64_t botwgame_gb = {hx(CANON)};\n')
-            f.write('__attribute__((weak, visibility("default"))) void botwgame_set_guest_base(uint64_t gb) '
-                    '{ botwgame_gb = gb; }\n')
+            f.write(f'__attribute__((weak, visibility("hidden"))) uint64_t totkgame_gb = {hx(CANON)};\n')
+            f.write('__attribute__((weak, visibility("default"))) void totkgame_set_guest_base(uint64_t gb) '
+                    '{ totkgame_gb = gb; }\n')
         write_if_changed(os.path.join(outdir, f'{name}_table.c'), f.getvalue())
     print(f'{name}: wrote {nchunks} chunks, {time.time() - t0:.0f}s total', file=sys.stderr)
 
