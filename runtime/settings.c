@@ -50,9 +50,10 @@ Settings g_settings = {
 #endif
 };
 
-// The system language the game reads back (runtime/services/am.c); it picks its own text from it, exactly as it does
-// on the console. Codes as the Switch reports them. Pokémon Scarlet / Violet has Japanese, English, French, Italian,
-// German, Spanish, Korean and both Chinese: the others (Dutch, Russian, Brazilian Portuguese) are told English.
+// The game's own text languages: its RomFS carries one message archive per region and language (Mals/USen, USes,
+// USfr, USpt, EUen, EUde, EUes, EUfr, EUit, EUnl, EUru, JPja, KRko, CNzh, TWzh: .Product.142.sarc.zs), and the game
+// picks one from the system language it reads back (runtime/services/am.c), exactly as it does on the console. Codes as
+// the Switch reports them. TOTK 1.4.2 has all of them, Brazilian Portuguese (USpt) included.
 const char *const g_language_codes[N_LANGUAGES] = {"auto", "ja", "en-US", "es", "fr", "de", "it", "nl", "ru", "ko",
                                                    "zh-CN", "zh-TW", "pt-BR"};
 const char *const g_language_names[N_LANGUAGES] = {"Auto", "Japanese", "English", "Spanish", "French", "German",
@@ -106,13 +107,13 @@ static const char *host_language(void) {
         if (!strcmp(l, map[i].loc)) return map[i].code;
     if (!strcmp(l, "zh"))  // (TW / HK, Hant: traditional)
         return strstr(e, "TW") || strstr(e, "HK") || strstr(e, "Hant") ? "zh-TW" : "zh-CN";
+    if (!strcmp(l, "pt")) return "pt-BR";  // (the only Portuguese the game has)
     return "en-US";
 }
 
 const char *settings_language(void) {
     int i = g_settings.language;
     const char *code = i > LANG_AUTO && i < N_LANGUAGES ? g_language_codes[i] : host_language();
-    if (!strcmp(code, "pt-BR") || !strcmp(code, "nl") || !strcmp(code, "ru")) return "en-US";  // (not in the game)
     return code;
 }
 

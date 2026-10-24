@@ -15,6 +15,7 @@
 #include "gamelib.h"
 #include "paths.h"
 #include "platform.h"
+#include "rt.h"
 
 static char g_root[1024], g_start[1024], g_exe_dir[1024];
 
@@ -78,23 +79,26 @@ static void fail(const char *msg) {
 static bool g_dev;  // the data root is the starting folder because it has extracted/ (a source checkout)
 bool rt_dev_mode(void) { return g_dev; }
 
-// ---- game versions (paths.h): 1.0.0 in the data root, 1.6.0 / 1.8.2 in its v160 / v182
-static char g_main[1024];   // 1.0.0's data root, which the others' folders are in
-static int g_version = 100;  // whose folder the data root is
+// ---- game versions (paths.h): the main one (GAME_V_MAIN) in the data root, any other in its own v<version>
+static char g_main[1024];           // the main version's data root, which the others' folders are in
+static int g_version = GAME_V_MAIN;  // whose folder the data root is
 
 #define VERSION_FILE "game_version.txt"
 
-// The one the start screen chose (game_version.txt in the main root; none = 1.0.0)
+// A version set up in a folder of its own beside the main one (BOTWRecompAndroid's 1.6.0 / 1.8.2): none yet
+static bool other_version(int v) { (void)v; return false; }
+
+// The one the start screen chose (game_version.txt in the main root; none = the main one)
 static int selected_version(const char *main_root) {
     char p[1100];
     snprintf(p, sizeof p, "%s" SEP VERSION_FILE, main_root);
     FILE *f = fopen(p, "rb");
-    int v = 100;
+    int v = GAME_V_MAIN;
     if (f) {
-        if (fscanf(f, "%d", &v) != 1) v = 100;
+        if (fscanf(f, "%d", &v) != 1) v = GAME_V_MAIN;
         fclose(f);
     }
-    return v == 160 || v == 182 ? v : 100;
+    return other_version(v) ? v : GAME_V_MAIN;
 }
 
 static bool copy_file(const char *from, const char *to) {
@@ -110,13 +114,13 @@ static bool copy_file(const char *from, const char *to) {
     return ok;
 }
 
-// The data root is a version's own folder (cwd): its settings start as 1.0.0's (once), its saves as 1.0.0's (fs.c copies
-// them when the game first opens one: LARECOMP_SAVE_SEED)
+// The data root is a version's own folder (cwd): its settings start as the main version's (once), its saves too (fs.c
+// copies them when the game first opens one: LARECOMP_SAVE_SEED)
 static void version_seed(void) {
     char from[1100];
     snprintf(from, sizeof from, "%s" SEP "totkrecompandroid.ini", g_main);
     if (!exists("totkrecompandroid.ini") && copy_file(from, "totkrecompandroid.ini"))
-        fprintf(stderr, "[paths] settings: a copy of 1.0.0's\n");
+        fprintf(stderr, "[paths] settings: a copy of the main version's\n");
     if (getenv("LARECOMP_SAVE_SEED")) return;
     snprintf(from, sizeof from, "%s" SEP "save", g_main);
 #ifdef _WIN32
@@ -129,8 +133,8 @@ static void version_seed(void) {
 int rt_game_version(void) { return g_version; }
 
 bool rt_version_root(int v, char *out, size_t n) {
-    if (v == 100) return (size_t)snprintf(out, n, "%s", g_main) < n;
-    if (v == 160 || v == 182) return (size_t)snprintf(out, n, "%s" SEP "v%d", g_main, v) < n;
+    if (v == GAME_V_MAIN) return (size_t)snprintf(out, n, "%s", g_main) < n;
+    if (other_version(v)) return (size_t)snprintf(out, n, "%s" SEP "v%d", g_main, v) < n;
     return false;
 }
 
@@ -151,8 +155,8 @@ int rt_game_dir_version(const char *game_dir) {
         if (abs) snprintf(got, sizeof got, "%s", game_dir);
         else snprintf(got, sizeof got, "%s" SEP "%s", g_root, game_dir);
     }
-    static const int versions[] = {100, 160, 182};
-    for (int i = 0; i < 3; i++) {
+    static const int versions[] = {GAME_V_MAIN};  // (and any other_version)
+    for (size_t i = 0; i < sizeof versions / sizeof *versions; i++) {
         char r[1024], want[1100];
         if (!rt_version_root(versions[i], r, sizeof r)) continue;
         snprintf(want, sizeof want, "%s" SEP "extracted", r);
@@ -162,7 +166,7 @@ int rt_game_dir_version(const char *game_dir) {
 }
 
 bool rt_version_game_lib(int v, char *out, size_t n) {
-    if (v != 160 && v != 182) return false;
+    if (!other_version(v)) return false;
 #ifdef __ANDROID__
     const char *in = SDL_GetAndroidInternalStoragePath();
     return in && (size_t)snprintf(out, n, "%s/v%d/%s", in, v, GAMELIB_NAME) < n;
@@ -200,10 +204,10 @@ void rt_paths_init(void) {
         snprintf(root, sizeof root, "%s/Library/Application Support/" RT_BUNDLE_ID, home && *home ? home : "/tmp");
 #endif
     }
-    if (!(env && *env)) {  // the game version the start screen chose: 1.6.0 / 1.8.2 in their own folder
+    if (!(env && *env)) {  // the game version the start screen chose: any but the main one in its own folder
         int v = selected_version(root);
         size_t l = strlen(root);
-        if (v != 100) snprintf(root + l, sizeof root - l, SEP "v%d", v);
+        if (v != GAME_V_MAIN) snprintf(root + l, sizeof root - l, SEP "v%d", v);
     }
     mkdirs(root);
     char msg[1400];
@@ -218,12 +222,12 @@ void rt_paths_init(void) {
         fail(msg);
     }
     if (!getcwd(g_root, sizeof g_root)) snprintf(g_root, sizeof g_root, "%s", root);
-    // a version's own folder by its name (v160 / v182, chosen or LARECOMP_DATA_ROOT's), in 1.0.0's root
+    // a version's own folder by its name (v<version>, chosen or LARECOMP_DATA_ROOT's), in the main version's root
     const char *base = strrchr(g_root, '/'), *bs = strrchr(g_root, '\\');
     if (bs > base) base = bs;
     snprintf(g_main, sizeof g_main, "%s", g_root);
-    g_version = 100;
-    if (base && (!strcmp(base + 1, "v160") || !strcmp(base + 1, "v182"))) {
+    g_version = GAME_V_MAIN;
+    if (base && base[1] == 'v' && other_version(atoi(base + 2))) {
         g_version = atoi(base + 2);
         snprintf(g_main, sizeof g_main, "%.*s", (int)(base - g_root), g_root);
         version_seed();

@@ -614,7 +614,7 @@ static Service *open_host_fs(const char *sub) {
     if (getenv("LARECOMP_SAVE_DIR")) g_save_dir = getenv("LARECOMP_SAVE_DIR");  // test runs use a scratch copy
     snprintf(fs->root, sizeof fs->root, "%s/%s", g_save_dir, sub);
     {   // LARECOMP_SAVE_SEED=<save folder>: a save that doesn't exist yet starts as a copy of that one's (another game
-        // version's data root starting from the player's saves - android/run_v160.sh)
+        // version's data root starting from the player's saves - android/run_ver.sh)
         const char *seed = getenv("LARECOMP_SAVE_SEED");
         struct stat sb;
         if (seed && *seed && stat(fs->root, &sb)) {

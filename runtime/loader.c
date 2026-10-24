@@ -16,6 +16,7 @@ typedef struct { uint32_t name; uint8_t info, other; uint16_t shndx; uint64_t va
 typedef struct { uint64_t off, info; int64_t addend; } Elf64Rela;
 
 int g_game_version;
+uint64_t g_program_id = 0x0100F2C0115B6000ull;  // (Tears of the Kingdom)
 
 static size_t lz4_decompress(const uint8_t *src, size_t srclen, uint8_t *dst, size_t dstlen) {
     const uint8_t *s = src, *se = src + srclen;
@@ -69,14 +70,14 @@ static uint64_t gnu_hash_nsyms(uint64_t h) {
 // The game's version for main's build id (the NSO header's bytes 0x40-0x47; 0: unknown) - also runtime/gamebuild.c
 int game_version_of_build(const uint8_t id[8]) {
     static const struct { uint8_t id[8]; int version; } builds[] = {
-        {{0x20, 0x94, 0xf1, 0x52, 0x83, 0x66, 0x83, 0xa3}, 100},
-        {{0x8e, 0x99, 0x78, 0xd5, 0x0b, 0xdd, 0x20, 0xb4}, 160},
-        {{0xde, 0x0b, 0x6a, 0xc4, 0xef, 0xc1, 0xdd, 0xa7}, 182},
+        {{0x5c, 0xb4, 0x2b, 0x1c, 0xf2, 0x54, 0x69, 0xfb}, GAME_V_142},  // TOTK 1.4.2 (update v655360, SDK 20.5.6)
     };
     for (unsigned i = 0; i < sizeof builds / sizeof *builds; i++)
         if (!memcmp(id, builds[i].id, 8)) return builds[i].version;
     return 0;
 }
+
+const char *game_version_name(int v) { return v == GAME_V_142 ? "1.4.2" : "?"; }
 
 static void load_nso(Module *m, const char *path, uint64_t base) {
     size_t len;

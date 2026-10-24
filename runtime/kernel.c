@@ -567,10 +567,11 @@ static uint32_t svc_wait_process_wide_key(uint64_t mutex, uint64_t key, uint32_t
     t->wait_tag = tag;
     __atomic_store_n(u32p(key), 1, __ATOMIC_SEQ_CST);
     uint32_t r = block_current(timeout);
-    // A wait that timed out returns without the mutex in BOTW 1.8.2's SDK, as on the console: user mode takes it
-    // again (InternalConditionVariableImplByHorizon::TimedWait calls Enter on 0xea01). Taken here too, the thread then
-    // waited for the mutex it held, and every thread after it (SavageWindRecomp). The older SDKs run as before.
-    if (r != R_OK && !(r == R_TIMEOUT && g_game_version == 182)) {
+    // A wait that timed out returns without the mutex in BOTW 1.8.2's SDK (TOTK 1.4.2's is the same), as on the
+    // console: user mode takes it again (InternalConditionVariableImplByHorizon::TimedWait calls Enter on 0xea01). Taken
+    // here too, the thread then waited for the mutex it held, and every thread after it
+    // (SavageWindRecomp). The older SDKs run as before.
+    if (r != R_OK && !(r == R_TIMEOUT && game_new_sdk())) {
         // timed out / cancelled: still must reacquire the mutex
         if (!mutex_acquire_or_mark(mutex, tag)) {
             t->wait_kind = WAIT_MUTEX;
@@ -1097,7 +1098,7 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         case 14: v = STACK_BASE; break;
         case 15: v = STACK_SIZE; break;
         case 16: case 17: v = 0; break;
-        case 18: v = 0x01007EF00011E000ull; break;  // program id (BOTW)
+        case 18: v = g_program_id; break;  // program id (main.npdm)
         // UserExceptionContextAddress: a zeroed page at the top of the TLS region (BOTW 1.8.2's SDK passes it to
         // SetDyingMessageRegion, which needs it non-null - SavageWindRecomp); AliasRegionExtraSize (HOS 18+): none
         case 20: v = TLS_BASE + TLS_SIZE - 0x1000; break;

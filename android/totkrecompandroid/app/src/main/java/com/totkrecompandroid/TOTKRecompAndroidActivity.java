@@ -10,8 +10,8 @@
 //   zig's headers) unpacked to <internal files>/gen once per app version, named in LARECOMP_GEN_DIR; its programs
 //   (libpymain.so, libzig.so) are in nativeLibraryDir;
 // - the system's pickers for the start screen (runtime/ui/launcher.mm): the game files folder (exefs/ and romfs/ are
-//   found in it; exefs/ is copied to its version's extracted/ - <external files>/extracted for 1.0.0, v160/ and v182/
-//   inside it for the others, runtime/paths.h - and romfs.bin built there straight from romfs/) and the Vulkan driver
+//   found in it; exefs/ is copied to its version's extracted/ - <external files>/extracted for 1.4.2, a v<version>/
+//   inside it for any other, runtime/paths.h - and romfs.bin built there straight from romfs/) and the Vulkan driver
 //   (a .zip copied to the drivers folder).
 // The data root (game files, saves, settings) is <external files>: /sdcard/Android/data/com.totkrecompandroid/files.
 // While in front it reports the battery and thermal state once a second for the performance overlay
@@ -414,7 +414,7 @@ public class TOTKRecompAndroidActivity extends SDLActivity {
         return null;
     }
 
-    // exefs: the folder with main and main.npdm; romfs: the folder with Pack - in the picked folder or a few
+    // exefs: the folder with main and main.npdm; romfs: the folder with Pack/ and Mals/ - in the picked folder or a few
     // levels below it (as runtime/ui/launcher.mm find_game)
     private Doc exefs, romfs;
     private boolean packages;
@@ -432,8 +432,8 @@ public class TOTKRecompAndroidActivity extends SDLActivity {
             preGame = named(kids, "totkgame.so.game");
         }
         if (exefs == null && named(kids, "main") != null && named(kids, "main.npdm") != null) exefs = dir;
-        Doc rc = named(kids, "Pack");
-        if (romfs == null && rc != null && rc.dir) romfs = dir;
+        Doc pack = named(kids, "Pack"), mals = named(kids, "Mals");
+        if (romfs == null && pack != null && pack.dir && mals != null && mals.dir) romfs = dir;
         for (Doc k : kids) {
             String n = k.name == null ? "" : k.name.toLowerCase();
             if (n.endsWith(".nsp") || n.endsWith(".xci") || n.endsWith(".nca") || n.endsWith(".nsz") || n.endsWith(".xcz")) packages = true;
@@ -532,7 +532,7 @@ public class TOTKRecompAndroidActivity extends SDLActivity {
                 int got = 0;
                 for (int r; got < head.length && (r = in.read(head, got, head.length - got)) > 0; ) got += r;
             }
-            int version = nativeGameVersion(head);  // (1.0.0, 1.6.0, 1.8.2: each set up in its own folder)
+            int version = nativeGameVersion(head);  // (1.4.2; another version would be set up in its own folder)
             if (version == 0) {
                 nativeImportDone(4);
                 return;

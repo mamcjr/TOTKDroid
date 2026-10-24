@@ -91,7 +91,7 @@ static int candidates(const char *game_dir, char out[3][1100]) {
 #ifdef __ANDROID__
     {   // 1.0.0's next to "the executable" (the activity copies it there at start; one set up just now, here)
         char exe[1024];
-        if (game_dir && rt_game_dir_version(game_dir) == 100 && plat_exe_path(exe, sizeof exe) && strrchr(exe, '/')) {
+        if (game_dir && rt_game_dir_version(game_dir) == GAME_V_MAIN && plat_exe_path(exe, sizeof exe) && strrchr(exe, '/')) {
             *strrchr(exe, '/') = 0;
             snprintf(own, sizeof own, "%s/%s", exe, GAMELIB_NAME);
             sync_from_game_dir(game_dir, own);

@@ -2,14 +2,14 @@
 """The game functions play sessions entered, for the hot/cold game code build (runtime/gamebuild.c, Android;
 LASRecompAndroid's, per game version here).
 
-Collect on the phone (counts from process start, the file rewritten every 1800 frames while playing), e.g. for 1.8.2:
-  bash android/run_ver.sh v182 3600 \\
-    'LARECOMP_FNPROF=0:999999999,LARECOMP_FNPROF_EVERY=1800,LARECOMP_FNPROF_OUT=/sdcard/Android/data/com.totkrecompandroid/files/v182/build/fnprof.txt'
+Collect on the phone (counts from process start, the file rewritten every 1800 frames while playing), e.g. for 1.4.2:
+  bash android/run_boot.sh 3600 \\
+    'LARECOMP_FNPROF=0:999999999,LARECOMP_FNPROF_EVERY=1800,LARECOMP_FNPROF_OUT=/sdcard/Android/data/com.totkrecompandroid/files/build/fnprof.txt'
 play through as many places as possible, then
-  adb pull /sdcard/Android/data/com.totkrecompandroid/files/v182/build/fnprof.txt session1.txt
+  adb pull /sdcard/Android/data/com.totkrecompandroid/files/build/fnprof.txt session1.txt
 Merge one or more sessions of one game version into the list the APK ships (android/totkrecompandroid/app/
 build.gradle.kts copies tools/hot_functions_*.txt; runtime/gamebuild.c picks the one of the game it builds):
-  hot_functions.py session1.txt [session2.txt ...] [-o tools/hot_functions_182.txt]
+  hot_functions.py session1.txt [session2.txt ...] [-o tools/hot_functions_142.txt]
 
 The sessions name their game version ('# game_version', runtime/fnprof.c): versions differ in what lives where, so
 they can't be mixed, and the list is written to tools/hot_functions_<version>.txt unless -o says otherwise.
@@ -25,7 +25,7 @@ NAMED_MAIN = 0x7000000000
 p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 p.add_argument('sessions', nargs='+', type=Path, help='fnprof.txt files (runtime/fnprof.c)')
 p.add_argument('-o', '--out', type=Path, help='the list (default: tools/hot_functions_<version>.txt)')
-p.add_argument('--version', type=int, help="the game version of inputs that don't name one (100, 160, 182)")
+p.add_argument('--version', type=int, help="the game version of inputs that don't name one (142: TOTK 1.4.2)")
 p.add_argument('--min-count', type=int, default=1, help='entries a function needs, summed over the sessions')
 args = p.parse_args()
 

@@ -16,7 +16,7 @@ Nothing owned by Nintendo may ever be committed or attached to an issue or pull 
   `.ttf`)
 - no game assets of any kind: textures, models, music, text, map files - also not "just one file for testing"
 
-Pull requests that include Nintendo files can't be merged. Screenshots and short clips of the game in bug reports are
+Pull requests that include game files can't be merged. Screenshots and short clips of the game in bug reports are
 fine.
 
 ## Reporting bugs
@@ -25,10 +25,11 @@ Open a [GitHub issue](https://github.com/mamcjr/TOTKRecompAndroid/issues). Pleas
 
 ## Building
 
-Android is the only application target. The plan and phase notes are in [docs/botw/BOTW-PORT.md](docs/botw/BOTW-PORT.md) (Portuguese).
+Android is the only application target. The plan and phase notes are in [docs/TOTK-PORT.md](docs/TOTK-PORT.md)
+(Portuguese); BOTWRecompAndroid's, where the engine comes from, in [docs/botw/BOTW-PORT.md](docs/botw/BOTW-PORT.md).
 Build the APK with `cd android/totkrecompandroid && ./gradlew assembleDebug` (Windows: `gradlew.bat assembleDebug`).
 Check your dump with `cd tools && python totk_dump.py`. Build its game library with
-`android/build_gamelib.sh Dump/01007EF00011E000/exefs`.
+`android/build_gamelib.sh Dump/0100F2C0115B6000/exefs`.
 
 ## Project layout
 
@@ -55,7 +56,8 @@ Check your dump with `cd tools && python totk_dump.py`. Build its game library w
 
 - Match the surrounding code: its naming, structure and comment density. Comments explain *why* (what the game does,
   what an address is, which bug showed the problem), not what the next line does.
-- Engine changes that aren't about BOTW should stay easy to bring back to LAS Recomp (and the other way round).
+- Engine changes that aren't about TOTK should stay easy to bring back to LAS Recomp and
+  BOTWRecompAndroid (and the other way round).
 
 ## Pull requests
 

@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 #include "cpu.h"
+#include "paths.h"
 #include "platform.h"
 
 #define LOG(...) fprintf(stderr, __VA_ARGS__)
@@ -55,11 +56,16 @@ extern uint64_t g_guest_lo;
 #endif
 
 // ---- loader.c
-// The game's version, from main's build id (loader_load): 100 for v1.0.0, 160 for v1.6.0, 0 unknown. What differs
-// between them in the runtime keys on this (1.6.0 is on SDK 7.3.2 with NVN 53, 1.0.0 on SDK 0.12.14 with NVN 52).
+// The game's version, from main's build id (loader_load): GAME_V_142 for Tears of the Kingdom 1.4.2, 0 unknown. What
+// differs by version in the runtime keys on this. (The checks for 100 / 160 / 182 are BOTW's 1.0.0, 1.6.0 and 1.8.2,
+// where the engine came from: 1.8.2 taught it SDK 20 and NVN 55. TOTK 1.4.2's sdk and multimedia modules are the
+// very same files as BOTW 1.8.2's, SDK 20.5.6 with NVN 55.15: only main differs.)
+// (GAME_V_*, game_version_of_build, game_version_name: runtime/paths.h)
 extern int g_game_version;
-// The version for a main build id (its NSO header's bytes 0x40-0x47; 0: unknown) - runtime/gamebuild.c too
-int game_version_of_build(const uint8_t id[8]);
+// SDK 20 (BOTW 1.8.2, TOTK 1.4.2): NVN 55's device info, timed-out condition variable waits
+static inline int game_new_sdk(void) { return g_game_version == 182 || g_game_version == GAME_V_142; }
+// The program id, from main.npdm (runtime/main.c boot; TOTK's until then): GetInfo, the add-on content base id
+extern uint64_t g_program_id;
 typedef struct Module {
     const char *name;
     uint64_t base, size;

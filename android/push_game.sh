@@ -2,13 +2,13 @@
 # android/push_game.sh <game folder with exefs/ and romfs/>: the player's own game files onto the device over adb,
 # set up as the start screen's setup would (docs/las/ANDROID-PORT.md, Fase 2; until the app has a folder picker):
 # <data root>/extracted/{exefs,romfs} (skipped when there), romfs.bin built on the device (android/tools/romfs_tool.c,
-# no third copy of 6 GB through USB), and the game code from android/build_gamelib.sh (android/out).
+# no third copy of 9 GB through USB), and the game code from android/build_gamelib.sh (android/out).
 set -euo pipefail
 export MSYS_NO_PATHCONV=1  # (Git Bash: leave the device paths alone)
 cd "$(dirname "$0")/.."
 R=$PWD
 SRC=${1:?usage: android/push_game.sh <folder with exefs/ and romfs/>}
-# (GAME_DEST / GAMELIB_OUT: another game version in its own data root, e.g. 1.6.0 in files/v160 - android/run_v160.sh)
+# (GAME_DEST / GAMELIB_OUT: another game version in its own data root, files/v<version> - android/run_ver.sh)
 D=${GAME_DEST:-/sdcard/Android/data/com.totkrecompandroid/files/extracted}
 LIB=${GAMELIB_OUT:-android/out}
 DEV_TMP=/data/local/tmp/totkrecompandroid

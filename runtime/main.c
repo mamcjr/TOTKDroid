@@ -189,10 +189,14 @@ static void boot(const char *root) {
         if (fread(meta, 1, sizeof meta, f) == sizeof meta && !memcmp(meta, "META", 4)) {
             prio = meta[0xE];
             stack_size = *(uint32_t *)(meta + 0x1C);
+            uint8_t aci[0x18];  // ACI0 (its offset at 0x70): the program id at +0x10
+            if (!fseek(f, *(uint32_t *)(meta + 0x70), SEEK_SET) && fread(aci, 1, sizeof aci, f) == sizeof aci &&
+                !memcmp(aci, "ACI0", 4))
+                memcpy(&g_program_id, aci + 0x10, 8);
         }
         fclose(f);
     }
-    LOG("main thread: prio %d, stack 0x%x\n", prio, stack_size);
+    LOG("main thread: prio %d, stack 0x%x, program id %016llx\n", prio, stack_size, (unsigned long long)g_program_id);
 
     // nn::init::Start(thread_handle, args_region, init_sdk, init_main[, fini_main]): with x4 in newer SDKs (1.8.2)
     uint64_t start = loader_find_symbol("_ZN2nn4init5StartEmmPFvvES2_S2_");

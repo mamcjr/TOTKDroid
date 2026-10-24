@@ -11,16 +11,18 @@
 //      Linux: $XDG_DATA_HOME/totkrecompandroid (~/.local/share/totkrecompandroid)
 //      Android: the app's external files folder (Android/data/<package>/files)
 //
-// Game versions: that root is v1.0.0's. v1.6.0 and v1.8.2 each run in a folder of their own inside it, v160 / v182
-// (game files, saves, settings - android/run_ver.sh's test runs use the same ones): the one the start screen chose
-// (game_version.txt in the root) becomes the data root instead. Its settings start as a copy of 1.0.0's, its saves too
-// (services/fs.c, LARECOMP_SAVE_SEED).
+// Game versions: that root is the main version's (rt.h GAME_V_MAIN, Tears of the Kingdom 1.4.2). Others would each run in a folder
+// of their own inside it, v<version> (game files, saves, settings - android/run_ver.sh's test runs use the same ones):
+// the one the start screen chose (game_version.txt in the root) becomes the data root instead, its settings and saves
+// starting as copies of the main version's (services/fs.c, LARECOMP_SAVE_SEED). There are none yet (paths.c
+// other_version), but the mechanism stays from BOTWRecompAndroid (1.0.0, 1.6.0 and 1.8.2 side by side).
 //
 // Resources: files that ship with the app (helper programs, the window icon) - next to the executable (the
 // Windows folder, the .app's Contents/MacOS), in the .app's Contents/Resources, or in the source tree.
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,14 +38,18 @@ bool rt_dev_mode(void);           // dev / portable mode (rule 2 above): e.g. a 
 // starting directory or the executable's parent; NULL = shipped builds only). Absolute path in out; false = none.
 bool rt_resource(const char *name, const char *dev_rel, char *out, size_t n);
 
-// Game versions (100, 160, 182: rt.h game_version_of_build)
+// Game versions, from main's build id (its NSO header's bytes 0x40-0x47: runtime/loader.c; 0 = not one this app runs)
+#define GAME_V_142 142          // Tears of the Kingdom 1.4.2 (the update v655360, SDK 20.5.6)
+#define GAME_V_MAIN GAME_V_142  // the one in the data root itself
+int game_version_of_build(const uint8_t id[8]);
+const char *game_version_name(int v);                     // "1.4.2"; "?" for one this app doesn't run
 int rt_game_version(void);                                // the one whose folder is the data root
 bool rt_select_game_version(int v);                       // the one the next start runs (the app restarts into it)
 bool rt_version_root(int v, char *out, size_t n);         // its folder (absolute)
 int rt_game_dir_version(const char *game_dir);            // whose extracted/ folder game_dir is; 0: none
-// Where its game code library is loaded from: 1.6.0's / 1.8.2's own (Android: <internal files>/v160|v182, as external
-// storage is mounted noexec; elsewhere their extracted/). false for 1.0.0, whose library is looked for as before
-// (runtime/gamelib.c: next to the executable, then extracted/).
+// Where its game code library is loaded from: another version's own (Android: <internal files>/v<version>, as external
+// storage is mounted noexec; elsewhere its extracted/). false for the main version, whose library is looked for as
+// before (runtime/gamelib.c: next to the executable, then extracted/).
 bool rt_version_game_lib(int v, char *out, size_t n);
 
 // The only way the app deletes game files. Removes the named entry of game_dir (an extracted/ folder) only if

@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 R=$PWD
 EXEFS=${1:?usage: android/build_gamelib.sh <exefs folder (main, sdk, ...)>}
-# (GAMELIB_GEN / GAMELIB_OUT: another game version beside the usual one, e.g. 1.6.0 in generated-android-dyn-160)
+# (GAMELIB_GEN / GAMELIB_OUT: another game version beside the usual one, e.g. generated-android-dyn-<version>)
 GEN=${GAMELIB_GEN:-$R/generated-android-dyn}
 OUT=${GAMELIB_OUT:-$R/android/out}
 W=$OUT/gamelib-build
@@ -27,7 +27,7 @@ if [ ! -f "$GEN/main/main_table.c" ] || [ ! -f "$GEN/sdk/sdk_table.c" ]; then
 fi
 
 # the files whose largest function has over 15000 labels: compiled at -O0 (android/gamelib/CMakeLists.txt, heavy.txt).
-# v1.6.0: 4 files, 15k-34k labels - each took clang hours at -O1/-O2; the largest under it (14.5k) compiles normally
+# (BOTW 1.6.0: 4 files, 15k-34k labels - each took clang hours at -O1/-O2; the largest under it, 14.5k, compiled normally)
 (cd "$GEN" && for f in main/*.c sdk/*.c; do
     awk -v f="$f" '/^[a-zA-Z].* f_[0-9a-f]+\(.*\) \{$/ {n = 0} /^L_[0-9a-f]+:/ {if (++n > 15000) {print f; exit}}' "$f"
 done) > "$GEN/heavy.txt"

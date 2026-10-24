@@ -35,13 +35,13 @@ SERVICE("pctl:s", pctl_s) { pctl_root(s, req, resp); }
 SERVICE("pctl:a", pctl_a) { pctl_root(s, req, resp); }
 SERVICE("pctl:r", pctl_r) { pctl_root(s, req, resp); }
 
-// ------------------------------------------------------------------ aoc:u (no DLC)
+// ------------------------------------------------------------------ aoc:u (no DLC yet)
 SERVICE("aoc:u", aoc_u) {
     (void)s;
     switch (req->cmd) {
     case 2: OUT(uint32_t, 0) = 0; resp_size(resp, 4); break;   // CountAddOnContent
     case 3: OUT(uint32_t, 0) = 0; resp_size(resp, 4); break;   // ListAddOnContent
-    case 5: OUT(uint64_t, 0) = 0x01006BB00C6F1000ull; resp_size(resp, 8); break;  // GetAddOnContentBaseId
+    case 5: OUT(uint64_t, 0) = g_program_id + 0x1000; resp_size(resp, 8); break;  // GetAddOnContentBaseId
     case 8: resp->copy_handles[resp->ncopy++] = new_event_handle(); break;
     default: ok_logger(s, req, resp);
     }
