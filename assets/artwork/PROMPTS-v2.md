@@ -13,3 +13,9 @@ Primary request: An evocative panoramic view of Hyrule as seen looking out from 
 Use case: logo-brand.
 Asset type: premium Android app icon artwork for a Zelda fan project, square full-bleed image. No rounded corner frame; the operating system supplies the mask.
 Primary request: The iconic Triforce: EXACTLY THREE equal upright equilateral solid gold triangles, one at the top, one at the lower left and one at the lower right, arranged edge-to-edge into one larger upright equilateral triangle with a clean inverted triangular empty opening at its center. Precise iconic geometry, perfectly symmetrical. Three triangles only, all pointing upwards. Use rich warm gold with restrained bevels and beautiful brushed-metal highlights, slightly aged but polished, no ornate engravings or elaborate surface patterns. Center the complete emblem within the middle 60 percent of the square so it fits circular Android masks. Deep dark petroleum teal stone-like background, very subtle ambient teal glow behind the emblem, strong simple silhouette, exceptional readability at tiny icon sizes. Elegant, understated, crisp graphic design with dimensional painted metallic finish. No text, letters, titles, sword, wings, eye, additional triangle, border, foliage, characters, watermark or other symbols. The final image should look like a clean finished app icon, not a product mockup or a photo.
+
+## totk-icon-v1.png (TOTKRecompAndroid)
+
+triforce-icon-v2.png with its petroleum teal background turned to a deep Zonai green (a hue shift of the teal pixels
+only, ~180° to ~126°; the gold Triforce untouched), so the TOTK app and the BOTW app look apart side by side. The
+Android build uses it for the application icon.

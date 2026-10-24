@@ -21,8 +21,8 @@ android {
         applicationId = "com.totkrecompandroid"
         minSdk = 30
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.1.1-beta"
+        versionCode = 1
+        versionName = "0.0.1-alpha"
         ndk {
             abiFilters += "arm64-v8a"
         }
@@ -90,7 +90,7 @@ android {
 val prepareTotkRecompAndroid by tasks.registering {
     val smaa = repo.resolve("third_party/smaa/SMAA.hlsl")
     val font = repo.resolve("third_party/fonts/Baloo2/Baloo2-SemiBold.ttf")
-    val icon = repo.resolve("assets/artwork/triforce-icon-v2.png")
+    val icon = repo.resolve("assets/artwork/totk-icon-v1.png")
     val background = repo.resolve("assets/artwork/great-plateau-background-v2.png")
     val touchSkin = repo.resolve("assets/artwork/sheikah-touch-atlas-v1.png")
     val libs = listOf("libSDL3.so", "libshaderc_shared.so", "libavcodec.so", "libavformat.so", "libavutil.so", "libswscale.so")
