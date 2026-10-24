@@ -66,6 +66,9 @@ extern int g_game_version;
 static inline int game_new_sdk(void) { return g_game_version == 182 || g_game_version == GAME_V_142; }
 // The program id, from main.npdm (runtime/main.c boot; TOTK's until then): GetInfo, the add-on content base id
 extern uint64_t g_program_id;
+// The system resource size, from main.npdm (0 for BOTW, 24 MiB for TOTK): GetInfo 16. Non-zero, the SDK turns its
+// virtual address memory on (nn::os::AllocateAddressRegion / AllocateMemoryPages over the alias region)
+extern uint64_t g_system_resource_size;
 typedef struct Module {
     const char *name;
     uint64_t base, size;

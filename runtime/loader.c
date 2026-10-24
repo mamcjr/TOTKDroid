@@ -17,6 +17,7 @@ typedef struct { uint64_t off, info; int64_t addend; } Elf64Rela;
 
 int g_game_version;
 uint64_t g_program_id = 0x0100F2C0115B6000ull;  // (Tears of the Kingdom)
+uint64_t g_system_resource_size;
 
 static size_t lz4_decompress(const uint8_t *src, size_t srclen, uint8_t *dst, size_t dstlen) {
     const uint8_t *s = src, *se = src + srclen;

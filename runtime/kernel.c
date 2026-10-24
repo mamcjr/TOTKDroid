@@ -1097,7 +1097,11 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         case 13: v = GUEST_HI - GUEST_LO; break;
         case 14: v = STACK_BASE; break;
         case 15: v = STACK_SIZE; break;
-        case 16: case 17: v = 0; break;
+        // SystemResourceSizeTotal / Used: the NPDM's. TOTK's SDK checks the total before setting up VammManager (its
+        // virtual address memory, over the alias region: MapPhysicalMemory below), and its game allocates address
+        // regions without asking - with 0 here, VammManager::AllocateAddressRegion ran on a manager never made
+        case 16: v = g_system_resource_size; break;
+        case 17: v = 0; break;
         case 18: v = g_program_id; break;  // program id (main.npdm)
         // UserExceptionContextAddress: a zeroed page at the top of the TLS region (BOTW 1.8.2's SDK passes it to
         // SetDyingMessageRegion, which needs it non-null - SavageWindRecomp); AliasRegionExtraSize (HOS 18+): none
