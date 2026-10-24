@@ -11,8 +11,8 @@ Feito sobre o motor do **[LAS Recomp](https://github.com/peiikai/LASRecomp)**, d
 **[BOTWRecompAndroid](https://github.com/mamcjr/BOTWRecompAndroid)**, de onde este repositório saiu.
 
 > [!WARNING]
-> **Ainda não dá para jogar.** O jogo inicia no celular até a abertura ("Nintendo apresenta"), a 30 fps, e a GPU
-> falha quando ele passa dela. O plano e o estado de cada fase estão em [docs/TOTK-PORT.md](docs/TOTK-PORT.md).
+> **Ainda não dá para jogar.** O jogo chega à tela título no celular (com o driver Turnip); um jogo novo cai quando o
+> áudio começa. O plano e o estado de cada fase estão em [docs/TOTK-PORT.md](docs/TOTK-PORT.md).
 
 ## Plataforma
 
@@ -27,10 +27,11 @@ Android.
   mesmos arquivos, e ele pede os mesmos 49 serviços do sistema. Tudo o que o motor aprendeu com o BOTW 1.8.2 (SDK
   20.5.6, NVN 55.15) vale como está; só o código do próprio jogo (`main`) é novo.
 - O código do jogo é gerado e compila: 228.251 funções do `main` e 40.461 do SDK, num `totkgame.so` de 273 MB.
-- Primeiro boot no celular (POCO F7 Ultra): o jogo inicia, monta o som (Opus decodificado pelo FFmpeg), procura os
-  saves e mostra a abertura a 30 fps; depois a GPU se perde quando ele segue.
-- Falta: as instruções de shader e os compute shaders de que ele precisa depois da abertura, a tela título, os
-  efeitos de áudio, os vídeos, os saves, o desempenho.
+- No celular (POCO F7 Ultra, driver Turnip): o jogo chega à **tela título** a 30 fps - o logo, os murais Zonai
+  animados, o menu em português - e os controles de toque navegam nela. Com o driver da própria Qualcomm a GPU se
+  perde logo depois da abertura.
+- Falta: um jogo novo (ele cai quando o áudio começa: a revisão mais nova do renderizador de áudio), o áudio Opus (o
+  FFmpeg do app não tem o decodificador: silêncio por enquanto), os vídeos, os saves, o widescreen, o desempenho.
 
 > [!IMPORTANT]
 > Como o LAS Recomp, este projeto é feito quase inteiramente com IA (Claude, da Anthropic, pelo Claude Code), dirigido,

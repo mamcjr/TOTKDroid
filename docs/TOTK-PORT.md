@@ -167,18 +167,49 @@ Visto no 7º boot e ainda não tratado:
   parâmetros de voz lidos num layout errado para a revisão do TOTK).
 - `[nvn] ReadTexels` e `WriteTexels` parcial: não implementados (o jogo os chama em série).
 
-### Fase 4: gráficos — **em andamento**
+### Fase 4: gráficos — **a tela título (2026-10-24)**
 
-O 7º boot chega à abertura e cai quando o jogo passa dela:
+O 7º boot chegava à abertura e caía quando o jogo passava dela. O que faltava:
 
-- O tradutor Maxwell não conhece `VOTE` (`0x50D8...`, votação entre as threads de um warp) nem `RED` (`0xEBF8...`,
-  redução atômica em memória global): fragment shaders que falham na tradução.
-- Compute shaders lidos como zeros ("unknown instruction 0 at 0x8"): o endereço do código deles deve estar errado
-  para o TOTK.
-- Depois, *device lost* no driver da Qualcomm (`vkWaitSemaphores`). O BOTW roda melhor no Turnip: vale testar com ele.
-- Meta: a tela título.
+- **Instruções Maxwell** (`runtime/nvn/maxwell/translate.c`): `VOTE` (subgroupAll / Any / AllEqual e o ballot, com as
+  extensões de subgrupo só nos shaders que o usam), `RED` / `ATOM` (atômicos de 32 bits na memória global, pelo mesmo
+  endereço e cópia local do `LDG` / `STG`), `ATOMS` (na memória compartilhada), `VMNMX` (min / max de vídeo: min de
+  três, *clamps*) e `LEA` / `LEA.HI` (registrador, cbuf, imediato). O fuzz do `tools/test_translate.c` (8.000
+  programas, o GLSL compilado pelo shaderc do WSL) não mostrou falha nova - as 35 que restam são de `textureGather`,
+  antigas. Para rodá-lo sem o MSYS2: compilar `translate.c` e o teste no WSL (`-lshaderc -lSPIRV-Tools`) com um stub do
+  tradutor de referência, modo `glsl`.
+- **Compute shaders com cabeçalho:** os do TOTK começam com um cabeçalho NVN de marca `0x12345679` (os gráficos:
+  `0x12345678`) e o código em 0x100; o tradutor lia o cabeçalho como código. Os do LAS e do BOTW não tinham cabeçalho.
+- **Driver:** com o da Qualcomm a GPU se perde (*device lost* em `vkQueueSubmit2`, sem informação de falha) logo
+  depois da abertura, sempre no mesmo ponto - o rastro (`LARECOMP_VK_DEVLOST_TRACE=1`) não aponta um passe. **Com o
+  Turnip (Gen8 V37, o do BOTW) não**: o jogo chega à tela título e fica nela (20-30 fps, 25-40 mil draws e 500-850
+  dispatches a cada 2 s). Para testar pelo adb (o app de debug aceita `run-as`): `adb push libvulkan_freedreno.so
+  /data/local/tmp/`, `run-as com.totkrecompandroid` para copiá-lo em `files/drivers/Turnip_Gen8_V37/`, e
+  `android/run_boot.sh 150 LARECOMP_VK_DRIVER=/data/user/0/com.totkrecompandroid/files/drivers/Turnip_Gen8_V37/libvulkan_freedreno.so`
+  (a activity não acha sozinha um driver copiado assim: o caminho tem de vir na variável).
+- **A tela título** (Turnip, 2026-10-24): o logo, o fundo animado dos murais Zonai, o menu em português (Continuar /
+  Novo jogo / Opções / amiibo), a 30 fps; os controles de toque navegam (o `input tap` do adb é curto demais: `input
+  swipe x y x y 300`). Na primeira vez fica preta, só com o indicador de carregamento, por minutos: os shaders sendo
+  compilados (o cache de pipelines passa de 5 MB); depois, ~40 s até ela.
 
-### Fase 5: áudio, vídeos, saves, entrada
+Falta:
+
+- O *device lost* no driver da Qualcomm.
+- `[nvn] ReadTexels` e `WriteTexels` parcial (o jogo os chama em série), `textureGather` em alguns tipos de textura.
+- A cena só ocupa 16:9 no meio da tela de 20:9 (widescreen: Fase 7).
+
+### Fase 5: áudio, vídeos, saves, entrada — **em andamento**
+
+- **Novo jogo** (Turnip): o jogo pergunta se substitui os dados salvos (um boot anterior gravou um save) e, ao
+  começar, cai em ~15 s com duas falhas juntas: o jogo lendo `0x380000000000` e o SDK com um objeto em `-0x198`. O
+  `0x380000000000` é o mesmo valor que o `audren` já registrava em "wave buffer ... is outside guest memory": o TOTK
+  manda o `RequestUpdate` na revisão 15 (`REV?`) e o renderizador lê as vozes - e deve escrever o status delas de
+  volta - num layout que não é o dela. Próximo passo: o layout da revisão 15 em `runtime/services/audio.c`.
+- **Opus:** o FFmpeg do app não tem o decodificador Opus (ele precisa do `libswresample`, que
+  `android/deps/build_ffmpeg.sh` deixa de fora). O `hwopus` devolve silêncio do tamanho de cada pacote (pelo byte TOC);
+  um decodificador que não abria fazia o jogo abortar na tela título. Para ter o som: compilar o FFmpeg com o
+  swresample - mas o `android/deps/out` é o do LASRecompAndroid (junction), compartilhado com o LAS e o BOTW.
+- Efeitos de áudio 2, 5 e 7 e os *splitter destinations* do `audren`: não implementados.
 
 ### Fase 6: Android
 
