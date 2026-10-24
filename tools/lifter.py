@@ -405,7 +405,20 @@ class Lifter:
         nbits = 8 << size
         addr = XS(rn)
         if o1:
-            raise Unsupported('exclusive pair / CAS')
+            if o2 or size < 2:  # CAS / CASP: ARMv8.1, which the Switch's Cortex-A57 doesn't have
+                raise Unsupported('CAS / CASP')
+            # LDXP / LDAXP / STXP / STLXP: Pokémon Scarlet swaps 16 bytes at once (~16k sites: Havok 2021, the
+            # engine's lock-free lists); a pair of W registers is one 64-bit exclusive (Rt the low half)
+            rt2 = bits(w, 10, 5)
+            if size == 3:
+                if L:
+                    return Insn('op', f'{{ __uint128_t v = ldxp128(c, {addr}); {set_reg(1, rt, "(uint64_t)v")} '
+                                      f'{set_reg(1, rt2, "(uint64_t)(v >> 64)")} }}')
+                return Insn('op', f'{{ uint32_t st = stxp128(c, {addr}, {X(rt)}, {X(rt2)}); {set_reg(0, rs, "st")} }}')
+            if L:
+                return Insn('op', f'{{ uint64_t v = ldx64(c, {addr}); {set_reg(0, rt, "v")} {set_reg(0, rt2, "v >> 32")} }}')
+            return Insn('op', f'{{ uint32_t st = stx64(c, {addr}, (uint64_t){W(rt)} | (uint64_t){W(rt2)} << 32); '
+                              f'{set_reg(0, rs, "st")} }}')
         if o2 == 0:
             if L:
                 return Insn('op', set_reg(1, rt, f'ldx{nbits}(c, {addr})'))
