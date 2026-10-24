@@ -4,6 +4,9 @@
 # android/push_game.sh ROMFS_HOST=1, which pushes that one file instead of romfs/: TOTK's romfs is 304k files, which adb
 # copies slowly and lost the connection on halfway once. Skipped when it's there (.romfs.bin.built beside it); delete
 # that to build it again.
+# On Windows, Defender scans each file the builder opens (~50 ms apiece: hours for TOTK's 304k). The game's own image is
+# the same thing and comes out of hactoolnet in 3 minutes: hactoolnet -t nca <update nca> --basenca <game nca> --romfs
+# <game folder>/romfs.bin, then touch <game folder>/.romfs.bin.built (docs/TOTK-PORT.md).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 SRC=${1:?usage: android/build_romfs.sh <folder with romfs/>}

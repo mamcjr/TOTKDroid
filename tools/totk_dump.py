@@ -35,7 +35,7 @@ MODULES = [
 # the romfs: Zstandard-compressed files (.zs; the dictionaries in Pack/ZsDic.pack.zs), the boot pack, the messages of
 # each language (Mals/), the resource size table of this version
 ROMFS_FILES = ['Pack/ZsDic.pack.zs', 'Pack/Bootup.Nin_NX_NVN.pack.zs', 'Mals/USen.Product.142.sarc.zs',
-               'System/Resource/ResourceSizeTable.Product.142.rsizetable.zs']
+               'System/Resource/ResourceSizeTable.Product.142.Nin_NX_NVN.rsizetable.zs']
 
 
 def find_dump():
