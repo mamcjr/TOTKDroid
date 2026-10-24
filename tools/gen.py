@@ -308,6 +308,23 @@ class Module:
 
     # ------------------------------------------------------------ functions
 
+    def adr_targets(self, br_pc, entry, end):
+        """Where `adr xN, label` instructions of the br's function (its eh_frame range, else entry..end) point, for
+        the xN the br jumps through, or None. Hand-written code keeps a return point in a register this way: TOTK
+        1.4.2's memcpy at 0x70001bf810 does `adr x19, back` ... `br x19`, too far from the br for computed_target,
+        and dispatch then found no function at `back`. The switch on the register's value these become is right
+        whatever it holds: a value that's none of them still falls back to L_dispatch."""
+        rn = bits(self.word(br_pc), 5, 5)
+        lo, hi = self.fde(br_pc) or (entry, end)
+        out = set()
+        for a in range(lo, hi, 4):
+            w = self.word(a)
+            if (w & 0x9F000000) == 0x10000000 and (w & 31) == rn:  # ADR
+                t = a + sext(((w >> 29) & 3) | (((w >> 5) & 0x7FFFF) << 2), 21)
+                if lo <= t < hi:
+                    out.add(t)
+        return sorted(out) or None
+
     def computed_target(self, br_pc, entry):
         """True if the br register comes from address arithmetic (a table) rather than a load."""
         rn = bits(self.word(br_pc), 5, 5)
@@ -341,13 +358,16 @@ class Module:
                 if self.in_text(ins.target):
                     ext.add(ins.target)
             elif ins.kind == 'br':
+                fn_lo = (self.fde(a) or (entry,))[0]
                 jt = self.jump_table(a, entry, end)
+                if not jt and not self.computed_target(a, fn_lo):
+                    jt = self.adr_targets(a, entry, end)
                 if jt:
                     tables[a] = jt
                     # (a target outside this piece of a split function is a boundary, reached by a tail call)
                     for t in jt:
                         (labels if entry <= t < end else ext).add(t)
-                elif self.computed_target(a, (self.fde(a) or (entry,))[0]):
+                elif self.computed_target(a, fn_lo):
                     # unresolved table jump: allow jumping to any instruction of the function
                     tables[a] = 'all'
             terminated = ins.kind in ('b', 'br', 'ret', 'trap')
