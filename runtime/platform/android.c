@@ -214,6 +214,20 @@ bool plat_reset_guest(uint64_t lo, uint64_t hi) {
 
 void plat_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
+// (madvise, not a fresh mmap as plat_reset_guest: TOTK maps and unmaps 128 KiB at a time, and each mmap inside the
+// window would split it into more of the process's limited mappings; the window is private and anonymous, so the
+// dropped pages read as zero. A range's partial pages at its ends are cleared by hand.)
+void plat_discard(uint64_t addr, uint64_t size) {
+    uint64_t pg = (uint64_t)sysconf(_SC_PAGESIZE), lo = (addr + pg - 1) & ~(pg - 1), hi = (addr + size) & ~(pg - 1);
+    if (lo >= hi) {
+        memset((void *)(uintptr_t)addr, 0, size);
+        return;
+    }
+    memset((void *)(uintptr_t)addr, 0, lo - addr);
+    memset((void *)(uintptr_t)hi, 0, addr + size - hi);
+    if (madvise((void *)(uintptr_t)lo, hi - lo, MADV_DONTNEED) != 0) memset((void *)(uintptr_t)lo, 0, hi - lo);
+}
+
 // ---- page write tracking (plat_written_pages), for the copy mode of Qualcomm's driver: there the heap isn't GPU
 // memory, so the vertex cache and the texture checks need to know what the CPU wrote (else every vertex and index
 // buffer was copied each frame: ~90 MB, ~7 ms of the render thread). Linux has no GetWriteWatch: a page asked about

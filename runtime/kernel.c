@@ -110,8 +110,12 @@ static bool kwait(int64_t timeout_ns, const struct timespec *ts) {
 
 // ------------------------------------------------------------------ memory map
 typedef struct { uint64_t addr, size; uint32_t type, perm; } Region;
-static Region regions[1024];
-static int nregions;
+// Sorted by address, and growing as needed: TOTK's virtual address memory (MapPhysicalMemory, 128 KiB at a time) went
+// past the 1024 a fixed table had. Its own lock, as the memory svcs run on any thread outside g_klock.
+static Region *regions;
+static int nregions, regions_cap;
+static pthread_mutex_t g_rlock = PTHREAD_MUTEX_INITIALIZER;
+#define PHYSICAL 0x7  // MapPhysicalMemory's regions' type: merged with their neighbours, unmapped by range
 static uint64_t heap_size;
 #ifdef __ANDROID__
 static uint64_t tls_next;  // (TLS_BASE moves with the window: kernel_init sets it)
@@ -122,54 +126,114 @@ uint64_t kernel_heap_size(void) { return heap_size; }  // bytes from HEAP_BASE s
 // Writable guest data regions (heap, mapped/physical memory, module .data): for debug/runtime memory scans.
 int kernel_data_regions(uint64_t *addr, uint64_t *size, int max) {
     int n = 0;
+    pthread_mutex_lock(&g_rlock);
     for (int i = 0; i < nregions && n < max; i++)
         if ((regions[i].perm & 2) && regions[i].type != 0xB && regions[i].type != 0xC) {
             addr[n] = regions[i].addr; size[n] = regions[i].size; n++;
         }
+    pthread_mutex_unlock(&g_rlock);
     return n;
 }
 
+static void region_insert(int i, Region r) {  // (caller holds g_rlock)
+    if (nregions == regions_cap) {
+        regions_cap = regions_cap ? regions_cap * 2 : 1024;
+        regions = realloc(regions, sizeof *regions * regions_cap);
+        if (!regions) FATAL("out of memory for the memory map\n");
+    }
+    memmove(&regions[i + 1], &regions[i], (nregions - i) * sizeof *regions);
+    regions[i] = r;
+    nregions++;
+}
+
 static void region_add(uint64_t addr, uint64_t size, uint32_t type, uint32_t perm) {
-    if (nregions == 1024) FATAL("too many regions\n");
     plat_commit(addr, size);  // back it before the OS writes there (Windows: file reads into the heap)
-    int i = nregions++;
-    while (i > 0 && regions[i - 1].addr > addr) { regions[i] = regions[i - 1]; i--; }
-    regions[i] = (Region){addr, size, type, perm};
+    pthread_mutex_lock(&g_rlock);
+    int i = nregions;
+    while (i > 0 && regions[i - 1].addr > addr) i--;
+    Region *p = i > 0 ? &regions[i - 1] : NULL, *n = i < nregions ? &regions[i] : NULL;
+    if (type == PHYSICAL && p && p->type == type && p->perm == perm && p->addr + p->size == addr) {
+        p->size += size;  // (VammManager maps an address region's pages one after another: one entry for them all)
+        if (n && n->type == type && n->perm == perm && addr + size == n->addr) {
+            p->size += n->size;
+            memmove(n, n + 1, (nregions - i - 1) * sizeof *regions);
+            nregions--;
+        }
+    } else if (type == PHYSICAL && n && n->type == type && n->perm == perm && addr + size == n->addr) {
+        n->addr = addr;
+        n->size += size;
+    } else {
+        region_insert(i, (Region){addr, size, type, perm});
+    }
+    pthread_mutex_unlock(&g_rlock);
 }
 
 static void region_remove(uint64_t addr) {
+    pthread_mutex_lock(&g_rlock);
     for (int i = 0; i < nregions; i++) {
         if (regions[i].addr == addr) {
             memmove(&regions[i], &regions[i + 1], (nregions - i - 1) * sizeof(Region));
             nregions--;
-            return;
+            break;
         }
     }
+    pthread_mutex_unlock(&g_rlock);
+}
+
+// [addr, addr+size) out of the PHYSICAL regions it overlaps: they shrink, or split around it (VammManager frees pages
+// from the middle of what it mapped, and in pieces other than the ones it mapped them in)
+static void region_remove_physical(uint64_t addr, uint64_t size) {
+    uint64_t end = addr + size;
+    pthread_mutex_lock(&g_rlock);
+    for (int i = 0; i < nregions; i++) {
+        Region *r = &regions[i];
+        uint64_t r_end = r->addr + r->size;
+        if (r->type != PHYSICAL || r_end <= addr || r->addr >= end) continue;
+        if (r->addr < addr && r_end > end) {  // a hole in the middle
+            r->size = addr - r->addr;
+            region_insert(i + 1, (Region){end, r_end - end, PHYSICAL, regions[i].perm});
+            break;
+        }
+        if (r->addr < addr) {
+            r->size = addr - r->addr;
+        } else if (r_end > end) {
+            r->addr = end;
+            r->size = r_end - end;
+        } else {
+            memmove(r, r + 1, (nregions - i - 1) * sizeof *regions);
+            nregions--;
+            i--;
+        }
+    }
+    pthread_mutex_unlock(&g_rlock);
 }
 
 static void query_memory(uint64_t addr, uint64_t out) {
     uint64_t prev_end = 0;
     uint64_t info[5] = {0};  // addr, size, type|attr<<32, perm|ipc<<32, device|pad<<32
-    for (int i = 0; i < nregions; i++) {
+    bool found = false;
+    pthread_mutex_lock(&g_rlock);
+    for (int i = 0; i < nregions && !found; i++) {
         Region *r = &regions[i];
         if (addr >= r->addr && addr < r->addr + r->size) {
             info[0] = r->addr;
             info[1] = r->size;
             info[2] = r->type;
             info[3] = r->perm;
-            memcpy((void *)out, info, 0x28);
-            return;
-        }
-        if (addr < r->addr) {
+            found = true;
+        } else if (addr < r->addr) {
             info[0] = prev_end;
             info[1] = r->addr - prev_end;
-            memcpy((void *)out, info, 0x28);
-            return;
+            found = true;
+        } else {
+            prev_end = r->addr + r->size;
         }
-        prev_end = r->addr + r->size;
     }
-    info[0] = prev_end;
-    info[1] = (1ull << 39) - prev_end;
+    pthread_mutex_unlock(&g_rlock);
+    if (!found) {
+        info[0] = prev_end;
+        info[1] = (1ull << 39) - prev_end;
+    }
     memcpy((void *)out, info, 0x28);
 }
 
@@ -1113,13 +1177,14 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         x[1] = v;
         break;
     }
-    case 0x2C:  // MapPhysicalMemory(addr, size)
-        memset((void *)x[0], 0, x[1]);
-        region_add(x[0], x[1], 0x7, 3);
+    case 0x2C:  // MapPhysicalMemory(addr, size): zero pages, backed when first touched
+        plat_discard(x[0], x[1]);
+        region_add(x[0], x[1], PHYSICAL, 3);
         x[0] = R_OK;
         break;
-    case 0x2D:  // UnmapPhysicalMemory
-        region_remove(x[0]);
+    case 0x2D:  // UnmapPhysicalMemory(addr, size): any range of what was mapped, its memory given back
+        region_remove_physical(x[0], x[1]);
+        plat_discard(x[0], x[1]);
         x[0] = R_OK;
         break;
     case 0x34: x[0] = svc_wait_for_address(x[0], (uint32_t)x[1], (int32_t)x[2], (int64_t)x[3]); break;
