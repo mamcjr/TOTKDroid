@@ -634,6 +634,19 @@ static Service *open_host_fs(const char *sub) {
     return service_new("IFileSystem", filesystem, fs);
 }
 
+// ISaveDataInfoReader (OpenSaveDataInfoReader*): the saves of a kind, here none. TOTK lists its cache storage at boot
+// (nn::fs::OpenCacheStorageList) and crashed on the reader an "ok" with no object left null. The runtime's saves are
+// host folders opened by type (save_<type>), made when first opened.
+static void save_data_info_reader(Service *s, IpcReq *req, IpcResp *resp) {
+    (void)s;
+    if (req->cmd == 0) {  // ReadSaveDataInfo -> B buffer of 0x60-byte entries; the count
+        OUT(uint64_t, 0) = 0;
+        resp_size(resp, 8);
+    } else {
+        LOG("[fs] ISaveDataInfoReader cmd %u (ok)\n", req->cmd);
+    }
+}
+
 // ------------------------------------------------------------------ fsp-srv
 SERVICE("fsp-srv", fsp_srv) {
     (void)s;
@@ -648,6 +661,9 @@ SERVICE("fsp-srv", fsp_srv) {
         ipc_return_object(resp, open_host_fs(sub));
         break;
     }
+    case 60: case 61: case 62: case 68:  // OpenSaveDataInfoReader / BySaveDataSpaceId / OnlyCacheStorage / WithFilter
+        ipc_return_object(resp, service_new("ISaveDataInfoReader", save_data_info_reader, NULL));
+        break;
     case 200: ipc_return_object(resp, open_romfs_storage()); break;  // OpenDataStorageByCurrentProcess
     case 202:  // OpenDataStorageByDataId (system data archives)
         LOG("[fs] OpenDataStorageByDataId %llx (not available)\n", IN(uint64_t, 8));
