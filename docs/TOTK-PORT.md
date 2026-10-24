@@ -117,7 +117,7 @@ exclusivos do PKMSV:
   rótulos) levou mais de 2 h, `main_001.c` (14.661) e `main_584.c` (12.348) perto de 1 h cada. Baixar o limite para
   ~9 mil encurtaria a compilação (no celular também), ao custo de código mais lento nessas funções.
 
-### Fase 3: boot até o primeiro quadro
+### Fase 3: boot até o primeiro quadro — **feita (2026-10-24)**
 
 Feito sem rodar o jogo (`tools/imports.py <exefs>`):
 
@@ -126,8 +126,7 @@ Feito sem rodar o jogo (`tools/imports.py <exefs>`):
   importa.
 - **Serviços:** os mesmos 49 do BOTW 1.8.2.
 
-Levar o jogo ao celular (o primeiro boot ainda não foi feito; o usuário pediu para não rodar nada no celular por
-enquanto):
+Levar o jogo ao celular:
 
 - `android/build_romfs.sh Dump/0100F2C0115B6000` faz o `romfs.bin` aqui no PC com `tools/romfs_build.py`, o
   `romfs_build.c` do app em Python. O `cc` do WSL foi tentado primeiro: lendo o romfs pelo `/mnt/d`, levou 31 minutos
@@ -145,21 +144,38 @@ enquanto):
 - O `push_game.sh` agora só dá uma parte por enviada com o marcador `.<parte>.pushed`, depois de conferir o número de
   arquivos, e faz o `romfs.bin` em `romfs.bin.part` (renomeado no fim). Antes, uma pasta não vazia contava como
   enviada: a cópia que caiu no meio (2026-10-24) viraria um `romfs.bin` faltando arquivos.
-- **Ficou no celular** uma cópia parcial em `Android/data/com.totkrecompandroid/files/extracted/` (exefs e parte do
-  romfs, sem marcadores): o `push_game.sh` manda o exefs de novo e, com `ROMFS_HOST=1`, apaga o romfs/ parcial antes
-  dos vídeos.
-- Depois: instalar o APK (`adb install -r android/totkrecompandroid/app/build/outputs/apk/debug/app-debug.apk`) e
-  `android/run_boot.sh 120`.
+- O envio com `ROMFS_HOST=1` levou 9 min 43 s (o `romfs.bin` inteiro, os vídeos, o `totkgame.so`).
+- O HyperOS do POCO recusa `adb install` em silêncio (`INSTALL_FAILED_USER_RESTRICTED`, sem aviso na tela) até
+  "Instalar via USB" ser ligado de novo nas opções do desenvolvedor.
 
-Falta (precisa rodar o jogo):
+O primeiro boot (POCO F7 Ultra, driver Vulkan da Qualcomm, 2026-10-24), boot a boot (`android/run_boot.sh`):
 
-- O que o `main` do TOTK faz de diferente com o mesmo SDK: tamanhos de heap, threads, comandos de serviço que o BOTW
-  nunca mandou (os `UNHANDLED` do log).
-- O primeiro quadro: o renderizador novo sobre o NVN 55.
+| Boot | Até onde foi | O que parou | Correção |
+|---|---|---|---|
+| 1 | `nn::init`, os 10.717 inicializadores do `main`, o índice do romfs (304.243 arquivos), o idioma (pt-BR), o NVN e a janela | `VammManager::AllocateAddressRegion` num gerenciador nunca criado: o SDK só liga a memória virtual (`nn::os::AllocateAddressRegion` / `AllocateMemoryPages`, sobre a região de alias) se o `GetInfo 16` (system resource) não for 0, e o jogo a usa sem perguntar | `GetInfo 16` = o system resource do `main.npdm` (24 MiB no TOTK, 0 no BOTW) |
+| 2 | mais 13 threads, mais leituras do romfs | `no function at 0x1001bfabc`: o `memcpy` do jogo volta por `adr x19, volta` ... `br x19`, que o gerador mandava ao despacho | `tools/gen.py`: um `br xN` com `adr xN` na função vira um switch sobre esses alvos (6 `br` do `main`, 4 arquivos C) |
+| 3 | idem | `too many regions`: o mapa de memória do kernel tinha 1.024 entradas fixas, e o VammManager mapeia memória física de 128 KiB em 128 KiB | mapa que cresce, regiões físicas vizinhas juntas, `UnmapPhysicalMemory` por faixa e devolvendo a memória (`madvise`) |
+| 4-5 | o renderizador de áudio, o `hwopus` | ponteiro nulo: o heap de som do jogo (do tamanho que o `System/HeapSize` dele diz) acabou | o `GetWorkBufferSize` do `audren` dizia 16 MB para qualquer renderizador (agora ~1 MB, pelos parâmetros); o `hwopus` virou um serviço de verdade (`runtime/services/hwopus.c`, Opus pelo FFmpeg do app) |
+| 6 | saves montados, o relógio | `nn::fs::OpenCacheStorageList`: o `fsp-srv` cmd 62 respondia "ok" sem o objeto | `OpenSaveDataInfoReader*` (60, 61, 62, 68) devolvem um leitor sem saves |
+| 7 | **o primeiro quadro: a abertura ("Nintendo apresenta"), a 30 fps, por uns 10 s**; o jogo procura os saves (nenhum), o álbum, toca o áudio | a GPU perdida (*device lost*) depois de ~450 envios | Fase 4 |
 
-### Fase 4: gráficos
+Visto no 7º boot e ainda não tratado:
 
-- Shaders do jogo (`Shader/*.bfsha.zs`) pelo tradutor Maxwell; usos novos de NVN.
+- `am` ICommonStateGetter cmd 66 e ISelfController cmd 62, `prepo:u` cmd 10105 (relatórios de jogo: o stub serve),
+  `nfp:user` (amiibo).
+- `audren`: os efeitos 2, 5 e 7 (não implementados no mixer) e *wave buffers* "fora da memória do guest" (os
+  parâmetros de voz lidos num layout errado para a revisão do TOTK).
+- `[nvn] ReadTexels` e `WriteTexels` parcial: não implementados (o jogo os chama em série).
+
+### Fase 4: gráficos — **em andamento**
+
+O 7º boot chega à abertura e cai quando o jogo passa dela:
+
+- O tradutor Maxwell não conhece `VOTE` (`0x50D8...`, votação entre as threads de um warp) nem `RED` (`0xEBF8...`,
+  redução atômica em memória global): fragment shaders que falham na tradução.
+- Compute shaders lidos como zeros ("unknown instruction 0 at 0x8"): o endereço do código deles deve estar errado
+  para o TOTK.
+- Depois, *device lost* no driver da Qualcomm (`vkWaitSemaphores`). O BOTW roda melhor no Turnip: vale testar com ele.
 - Meta: a tela título.
 
 ### Fase 5: áudio, vídeos, saves, entrada
