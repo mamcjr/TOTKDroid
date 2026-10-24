@@ -52,13 +52,17 @@ static OpusDec *opus_open(uint32_t rate, uint32_t channels) {
         LOG("[hwopus] decoder %u Hz x%u: not supported\n", rate, channels);
         return NULL;
     }
-    const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_OPUS);
     OpusDec *d = calloc(1, sizeof *d);
+    d->rate = (int)rate, d->channels = (int)channels, d->step = 48000 / (int)rate;
+    // (FFmpeg's Opus decoder needs libswresample, which android/deps/build_ffmpeg.sh leaves out - so it isn't in the
+    // app's libavcodec. Without it the decoder gives silence of the packets' length: a failed open made TOTK abort
+    // when its title screen opened one.)
+    const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_OPUS);
     d->ctx = codec ? avcodec_alloc_context3(codec) : NULL;
     if (!d->ctx) {
-        LOG("[hwopus] no Opus decoder in FFmpeg\n");
-        free(d);
-        return NULL;
+        static int once;
+        if (!once++) LOG("[hwopus] no Opus decoder in FFmpeg: Opus audio is silent\n");
+        return d;
     }
     d->ctx->sample_rate = 48000;
     av_channel_layout_default(&d->ctx->ch_layout, (int)channels);
@@ -70,8 +74,19 @@ static OpusDec *opus_open(uint32_t rate, uint32_t channels) {
     }
     d->pkt = av_packet_alloc();
     d->frame = av_frame_alloc();
-    d->rate = (int)rate, d->channels = (int)channels, d->step = 48000 / (int)rate;
     return d;
+}
+
+// Samples per channel at 48 kHz in an Opus packet, from its TOC byte (RFC 6716 3.1): the frame duration of its
+// configuration times its frame count; 0 if malformed
+static int opus_packet_samples(const uint8_t *p, uint32_t size) {
+    if (!size) return 0;
+    static const int dur[32] = {480, 960, 1920, 2880, 480, 960, 1920, 2880, 480, 960, 1920, 2880,  // SILK
+                                480, 960, 480, 960,                                                    // hybrid
+                                120, 240, 480, 960, 120, 240, 480, 960, 120, 240, 480, 960, 120, 240, 480, 960};  // CELT
+    int code = p[0] & 3, frames = code == 0 ? 1 : code < 3 ? 2 : size > 1 ? p[1] & 0x3F : 0;
+    int n = dur[p[0] >> 3] * frames;
+    return n <= MAX_FRAME_48K ? n : 0;
 }
 
 static inline uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
@@ -86,6 +101,14 @@ static uint32_t opus_decode(OpusDec *d, const uint8_t *in, uint64_t in_size, int
     *consumed = *samples = 0;
     if (in_size < 8 || 8 + (uint64_t)be32(in) > in_size) return R_CODEC_INVALID_ARGUMENT;
     uint32_t size = be32(in);
+    if (!d->ctx) {  // (no decoder: silence)
+        uint64_t n = (uint64_t)opus_packet_samples(in + 8, size) / d->step;
+        if (n * d->channels * 2 > out_size) n = out_size / 2 / d->channels;
+        memset(out, 0, n * d->channels * 2);
+        *consumed = 8 + size;
+        *samples = (uint32_t)n;
+        return 0;
+    }
     if (d->in_cap < size + AV_INPUT_BUFFER_PADDING_SIZE) {
         av_free(d->in);
         d->in_cap = size + AV_INPUT_BUFFER_PADDING_SIZE;
@@ -125,7 +148,7 @@ static void opus_decoder(Service *s, IpcReq *req, IpcResp *resp) {
     OpusDec *d = s->state;
     switch (req->cmd) {
     case 0: case 4: case 6: case 8: {  // DecodeInterleavedOld / WithPerfOld / WithPerfAndResetOld / DecodeInterleaved
-        if ((req->cmd == 6 || req->cmd == 8) && IN(uint8_t, 0)) avcodec_flush_buffers(d->ctx);  // reset
+        if ((req->cmd == 6 || req->cmd == 8) && IN(uint8_t, 0) && d->ctx) avcodec_flush_buffers(d->ctx);  // reset
         IpcBuf *in = in_buf(req, 0), *out = out_buf(req, 0);
         uint32_t consumed = 0, samples = 0;
         resp->result = in && out ? opus_decode(d, (const uint8_t *)(uintptr_t)in->addr, in->size,
