@@ -11,8 +11,8 @@ Feito sobre o motor do **[LAS Recomp](https://github.com/peiikai/LASRecomp)**, d
 **[BOTWRecompAndroid](https://github.com/mamcjr/BOTWRecompAndroid)**, de onde este repositório saiu.
 
 > [!WARNING]
-> **Ainda não dá para jogar.** O jogo chega à tela título no celular (com o driver Turnip); um jogo novo cai quando o
-> áudio começa. O plano e o estado de cada fase estão em [docs/TOTK-PORT.md](docs/TOTK-PORT.md).
+> **No começo.** No celular (com o driver Turnip) um jogo novo começa e dá para mover o Link no prólogo, mas boa parte
+> da cena sai errada (magenta) e boa parte do som falta. O plano e o estado de cada fase estão em [docs/TOTK-PORT.md](docs/TOTK-PORT.md).
 
 ## Plataforma
 
@@ -30,8 +30,10 @@ Android.
 - No celular (POCO F7 Ultra, driver Turnip): o jogo chega à **tela título** a 30 fps - o logo, os murais Zonai
   animados, o menu em português - e os controles de toque navegam nela. Com o driver da própria Qualcomm a GPU se
   perde logo depois da abertura.
-- Falta: um jogo novo (ele cai quando o áudio começa: a revisão mais nova do renderizador de áudio), o áudio Opus (o
-  FFmpeg do app não tem o decodificador: silêncio por enquanto), os vídeos, os saves, o widescreen, o desempenho.
+- Um jogo novo começa: a abertura e depois a caverna do prólogo com o Link controlável e o HUD em português, a cerca
+  de 20 fps.
+- Falta: os materiais da cena (boa parte em magenta), os sons que passam por splitters e o áudio Opus (mudos), os
+  vídeos, o widescreen, o desempenho.
 
 > [!IMPORTANT]
 > Como o LAS Recomp, este projeto é feito quase inteiramente com IA (Claude, da Anthropic, pelo Claude Code), dirigido,

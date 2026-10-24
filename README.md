@@ -11,8 +11,8 @@ It is built on the engine of **[LAS Recomp](https://github.com/peiikai/LASRecomp
 **[BOTWRecompAndroid](https://github.com/mamcjr/BOTWRecompAndroid)**, which this repository was forked from.
 
 > [!WARNING]
-> **Not playable yet.** The game boots on the phone to its title screen (with the Turnip driver); a new game crashes
-> as its audio starts. The plan and the state of each phase are in [docs/TOTK-PORT.md](docs/TOTK-PORT.md) (in
+> **Early.** On the phone (with the Turnip driver) a new game starts and Link can be moved in the prologue, but much
+> of the scene draws wrong (magenta) and much of the sound is missing. The plan and the state of each phase are in [docs/TOTK-PORT.md](docs/TOTK-PORT.md) (in
 > Portuguese).
 
 ## Supported platform
@@ -31,8 +31,10 @@ Android only (arm64, Vulkan). Windows, Linux or macOS may be used as development
 - On the phone (POCO F7 Ultra, the Turnip driver): the game boots to its **title screen** at 30 fps - the logo, the
   animated Zonai murals, the menu in Portuguese - and the touch controls move through it. With Qualcomm's own driver
   the GPU is lost right after the opening.
-- Not done yet: a new game (it crashes as its audio starts: the audio renderer's newer revision), Opus audio (the
-  app's FFmpeg has no Opus decoder: silence for now), movies, saves, widescreen, performance.
+- A new game starts: the opening, then the prologue's cave with Link under control and the HUD in Portuguese, at
+  about 20 fps.
+- Not done yet: the scene's materials (much of it magenta), sounds routed through splitters and Opus audio (silent),
+  movies, widescreen, performance.
 
 > [!IMPORTANT]
 > Like LAS Recomp, this project is made almost entirely with AI (Claude, by Anthropic, through Claude Code), directed,

@@ -200,11 +200,19 @@ Falta:
 
 ### Fase 5: áudio, vídeos, saves, entrada — **em andamento**
 
-- **Novo jogo** (Turnip): o jogo pergunta se substitui os dados salvos (um boot anterior gravou um save) e, ao
-  começar, cai em ~15 s com duas falhas juntas: o jogo lendo `0x380000000000` e o SDK com um objeto em `-0x198`. O
-  `0x380000000000` é o mesmo valor que o `audren` já registrava em "wave buffer ... is outside guest memory": o TOTK
-  manda o `RequestUpdate` na revisão 15 (`REV?`) e o renderizador lê as vozes - e deve escrever o status delas de
-  volta - num layout que não é o dela. Próximo passo: o layout da revisão 15 em `runtime/services/audio.c`.
+- **Novo jogo — o prólogo, jogável (Turnip, 2026-10-24).** Antes caía em ~15 s, quando os sons começavam: o TOTK
+  manda o `RequestUpdate` do `audren` na **revisão 15** (`REV?`), cujas vozes têm **0x188 bytes**: os dois biquads
+  viraram float (ativo, 3 reservados, f32 numerador[3] e denominador[2]: 0x18 cada, não os 0xC dos Q14) e todo campo
+  depois deles anda 0x18. Lidas de 0x170 em 0x170, toda voz depois da primeira era lixo (wave buffers em
+  `0x380000000000`). Conferido num dump real de uma atualização (`LARECOMP_AUDIO_DUMP=<pasta>`: ids, formatos ADPCM,
+  taxas, wave buffers e ids de canal no lugar). Agora: "Nintendo apresenta", "Tears of the Kingdom", a abertura (as
+  tochas na caverna sob o castelo) e o **Link controlável** no prólogo, com o HUD e as dicas em português, a ~20 fps.
+- O que se vê errado no jogo: as rochas e paredes da caverna em **magenta**. Suspeitos, pelo log: `ReadTexels` /
+  `WriteTexels` parcial (não implementados, 50 vezes cada), a memória global dos shaders sem importação ("no heap
+  import": as leituras voltam zero), um vertex shader com `DMUL` (`0x5C80...`, ponto flutuante duplo: o tradutor não
+  tem).
+- Muitas vozes vão por *splitters* (mix `0x7FFFFFFF` + splitter id), que o `audren` não implementa: esses sons ficam
+  mudos.
 - **Opus:** o FFmpeg do app não tem o decodificador Opus (ele precisa do `libswresample`, que
   `android/deps/build_ffmpeg.sh` deixa de fora). O `hwopus` devolve silêncio do tamanho de cada pacote (pelo byte TOC);
   um decodificador que não abria fazia o jogo abortar na tela título. Para ter o som: compilar o FFmpeg com o
