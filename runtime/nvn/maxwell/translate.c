@@ -91,6 +91,7 @@ typedef struct {
     bool glsl;               // emit Vulkan GLSL: dialect-specific constructs here, the rest via glsl_rewrite()
     bool uses_gmem_store;    // STG present: the gmem buffer is not readonly
     bool uses_shared;        // LDS / STS present: workgroup shared memory array
+    bool uses_vote;          // VOTE present: the subgroup vote and ballot extensions
     uint32_t cbuf_need[18];  // highest constant vec4 index + 1 per cbuf (array size of the GLSL block)
     bool static_stacks;      // (maxwell_static_stacks) flow_to holds every SYNC / BRK / CONT target
     int32_t *flow_to;        // per instruction index: its resolved target pc (-1: never reached)
@@ -1137,6 +1138,72 @@ static void emit_tmml(Ctx *c, uint64_t w, bool bindless, uint32_t pc) {
 }
 
 // ------------------------------------------------------------------ instruction translation
+// ------------------------------------------------------------------ global memory (LDG / STG / RED / ATOM)
+// Opens a global memory access to [reg a (a + 1 too when wide) + off]: "    { <ga> ...; bool ok = ...;\n", ga its
+// offset in the guest heap the gmem buffer maps (uint with maxwell_no_int64, else ulong), ok whether it's inside.
+// The caller emits the access and closes the block.
+static void gmem_open(Ctx *c, int a, bool wide, int64_t off) {
+    c->info->uses_gmem = true;
+    char addr[256];
+    if (a == RZ) sprintf(addr, "ulong(%lld)", (long long)off);
+    else if (wide) sprintf(addr, "((ulong(%s) << 32 | ulong(%s)) + ulong(%lld))", R(a + 1), R(a), (long long)off);
+    else sprintf(addr, "(ulong(%s) + ulong(%lld))", R(a), (long long)off);
+    if (c->glsl && maxwell_no_int64) {
+        // Keep the full high word until after signed offset addition and base subtraction.
+        // Only the checked heap-relative offset is 32-bit (the guest heap is at most 3.25 GiB).
+        if (maxwell_gmem_size > 0x100000000ull) fail(c, "32-bit shader heap exceeds 4 GiB");
+        const char *lo = a == RZ ? "0u" : R(a);
+        const char *hi = a != RZ && wide ? R(a + 1) : "0u";
+        sp(&c->body, "    { uint ac; uint al = uaddCarry(%s, 0x%08xu, ac); uint ah = %s + 0x%08xu + ac; "
+            "uint ga = al - 0x%08xu; uint gh = ah - 0x%08xu - uint(al < 0x%08xu); bool ok = gh == 0u",
+            lo, (uint32_t)off, hi, off < 0 ? 0xFFFFFFFFu : 0u,
+            (uint32_t)maxwell_gmem_base, (uint32_t)(maxwell_gmem_base >> 32), (uint32_t)maxwell_gmem_base);
+        if (maxwell_gmem_size < 0x100000000ull) sp(&c->body, " && ga < 0x%08xu", (uint32_t)maxwell_gmem_size);
+        sp(&c->body, ";\n");
+    } else {
+        sp(&c->body, "    { ulong ga = %s - 0x%llxul; bool ok = ga < 0x%llxul;\n", addr,
+           (unsigned long long)maxwell_gmem_base, (unsigned long long)maxwell_gmem_size);
+    }
+}
+
+// The word an atomic op leaves for the old one `o` and the operand `v` (op: 0 ADD, 1 MIN, 2 MAX, 3 INC, 4 DEC, 5 AND,
+// 6 OR, 7 XOR, 8 EXCH, 9 SAFEADD; size: 0 U32, 1 S32, 3 F32), into buf; false for one not done (64-bit, F16x2)
+static bool atom_new(char *buf, int op, int size, const char *o, const char *v) {
+    if (size == 3) return op == 0 && sprintf(buf, "as_u(as_f(%s) + as_f(%s))", o, v) > 0;  // (F32: ADD only)
+    if (size > 1) return false;
+    switch (op) {
+    case 0: case 9: sprintf(buf, "(%s + %s)", o, v); return true;
+    case 1: case 2:
+        if (size == 1) sprintf(buf, "uint(%s(int(%s), int(%s)))", op == 1 ? "min" : "max", o, v);
+        else sprintf(buf, "%s(%s, %s)", op == 1 ? "min" : "max", o, v);
+        return true;
+    case 3: sprintf(buf, "(%s >= %s ? 0u : %s + 1u)", o, v, o); return true;
+    case 4: sprintf(buf, "((%s == 0u || %s > %s) ? %s : %s - 1u)", o, o, v, v, o); return true;
+    case 5: sprintf(buf, "(%s & %s)", o, v); return true;
+    case 6: sprintf(buf, "(%s | %s)", o, v); return true;
+    case 7: sprintf(buf, "(%s ^ %s)", o, v); return true;
+    case 8: sprintf(buf, "%s", v); return true;
+    }
+    return false;
+}
+
+// One atomic op on the 32-bit word m (a buffer or shared element), the old value into ao_: GLSL's own atomic where
+// there is one, else a compare-and-swap loop. atomic false: a plain read-modify-write (a stage whose smem is a
+// private array). False for an op not done.
+static bool emit_atomic(Ctx *c, const char *m, int op, int size, const char *v, bool atomic) {
+    static const char *const fn[] = {"atomicAdd", "atomicMin", "atomicMax", NULL, NULL, "atomicAnd", "atomicOr",
+                                     "atomicXor", "atomicExchange", "atomicAdd"};
+    char nv[512];
+    if (!atom_new(nv, op, size, "ao_", v)) return false;
+    if (!atomic) sp(&c->body, "        ao_ = %s; %s = %s;\n", m, m, nv);
+    else if (op < 10 && fn[op] && (size == 0 || (size == 1 && op != 1 && op != 2)))
+        sp(&c->body, "        ao_ = %s(%s, %s);\n", fn[op], m, v);
+    else
+        sp(&c->body, "        ao_ = %s; for (;;) { uint an_ = %s; uint ap_ = atomicCompSwap(%s, ao_, an_); "
+           "if (ap_ == ao_) break; ao_ = ap_; }\n", m, nv, m);
+    return true;
+}
+
 static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
     char t[2048], u[2048];
     int d = (int)bits(w, 0, 8), a = (int)bits(w, 8, 8);
@@ -1744,27 +1811,7 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         bool wide = bits(w, 45, 1);
         int size = (int)bits(w, 48, 3);
         int64_t off = sbits(w, 20, 24);
-        c->info->uses_gmem = true;
-        char addr[256];
-        if (a == RZ) sprintf(addr, "ulong(%lld)", (long long)off);
-        else if (wide) sprintf(addr, "((ulong(%s) << 32 | ulong(%s)) + ulong(%lld))", R(a + 1), R(a), (long long)off);
-        else sprintf(addr, "(ulong(%s) + ulong(%lld))", R(a), (long long)off);
-        if (c->glsl && maxwell_no_int64) {
-            // Keep the full high word until after signed offset addition and base subtraction.
-            // Only the checked heap-relative offset is 32-bit (the guest heap is at most 3.25 GiB).
-            if (maxwell_gmem_size > 0x100000000ull) fail(c, "32-bit shader heap exceeds 4 GiB");
-            const char *lo = a == RZ ? "0u" : R(a);
-            const char *hi = a != RZ && wide ? R(a + 1) : "0u";
-            sp(&c->body, "    { uint ac; uint al = uaddCarry(%s, 0x%08xu, ac); uint ah = %s + 0x%08xu + ac; "
-                "uint ga = al - 0x%08xu; uint gh = ah - 0x%08xu - uint(al < 0x%08xu); bool ok = gh == 0u",
-                lo, (uint32_t)off, hi, off < 0 ? 0xFFFFFFFFu : 0u,
-                (uint32_t)maxwell_gmem_base, (uint32_t)(maxwell_gmem_base >> 32), (uint32_t)maxwell_gmem_base);
-            if (maxwell_gmem_size < 0x100000000ull) sp(&c->body, " && ga < 0x%08xu", (uint32_t)maxwell_gmem_size);
-            sp(&c->body, ";\n");
-        } else {
-            sp(&c->body, "    { ulong ga = %s - 0x%llxul; bool ok = ga < 0x%llxul;\n", addr,
-               (unsigned long long)maxwell_gmem_base, (unsigned long long)maxwell_gmem_size);
-        }
+        gmem_open(c, a, wide, off);
         static const char *const ld_small[] = {"uint(gmem[ga])", "uint(int(char(gmem[ga])))",
                                                "uint(*(device ushort *)(gmem + ga))", "uint(int(*(device short *)(gmem + ga)))"};
         int nw = size == 5 ? 2 : size >= 6 ? 4 : 1;
@@ -1916,6 +1963,148 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
             }
         }
         sp(&c->body, "    }\n");
+    } else if (OPM(0x50d8000000000000ull, 0xfff8000000000000ull)) {  // VOTE
+        // VOTE.ALL / ANY / EQ pb, rd, pa: pb whether the lanes' pa agree that way, rd the ballot of pa (TOTK's
+        // fragment shaders). The subgroup is the warp here; on a GPU whose subgroup is wider (Adreno: 64 or 128)
+        // the ballot keeps its first 32 lanes. Vertex shaders and the MSL path: one lane by itself.
+        int pa = (int)bits(w, 39, 3), pb = (int)bits(w, 45, 3), mode = (int)bits(w, 48, 2);
+        bool lanes = c->glsl && c->stage != STAGE_VERTEX;
+        static const char *const fn[] = {"subgroupAll", "subgroupAny", "subgroupAllEqual", "subgroupAll"};
+        if (lanes) c->uses_vote = true;
+        sp(&c->body, "    { bool vp_ = %s;\n", P(pa, bits(w, 42, 1)));
+        if (d != RZ) {
+            c->reg_used[d] = 1;
+            sp(&c->body, lanes ? "      r%d = subgroupBallot(vp_).x;\n" : "      r%d = vp_ ? 1u : 0u;\n", d);
+        }
+        if (pb != PT) {
+            c->pred_used[pb] = 1;
+            if (lanes) sp(&c->body, "      p%d = %s(vp_);\n", pb, fn[mode]);
+            else sp(&c->body, "      p%d = %s;\n", pb, mode == 2 ? "true" : "vp_");
+        }
+        sp(&c->body, "    }\n");
+    } else if (OPM(0xebf8000000000000ull, 0xfff8000000000000ull) ||   // RED
+               OPM(0xed00000000000000ull, 0xff00000000000000ull)) {  // ATOM
+        // RED: an atomic op on global memory, no result (TOTK's fragment shaders: RED.E.MIN / MAX.U32, a min / max
+        // over the screen). ATOM: the same, the old value into rd. [ra (ra:ra+1 with .E) + offset]
+        bool red = OPM(0xebf8000000000000ull, 0xfff8000000000000ull);
+        int src = red ? d : (int)bits(w, 20, 8);
+        int size = (int)(red ? bits(w, 20, 3) : bits(w, 49, 3)), op = (int)(red ? bits(w, 23, 3) : bits(w, 52, 4));
+        int64_t off = a == RZ ? (int64_t)bits(w, 28, 20) : sbits(w, 28, 20);
+        char nv[512];
+        if (!c->glsl) {
+            fail(c, "%s: GLSL only", red ? "RED" : "ATOM");
+        } else if (!atom_new(nv, op, size, "o", "v")) {
+            fail(c, "%s op %d size %d", red ? "RED" : "ATOM", op, size);
+        } else {
+            const char *v = R(src);
+            c->uses_gmem_store = true;
+            c->info->uses_gmem_store = true;
+            gmem_open(c, a, bits(w, 48, 1), off);
+            sp(&c->body, "      uint ao_ = 0u;\n");
+            if (c->stage == STAGE_COMPUTE || maxwell_gmem_map_all) {  // (the device-local copy first, as LDG / STG)
+                c->info->uses_gmem_map = true;
+                sp(&c->body, "      uint fw = ok ? gfind(uint(ga)) : 0xFFFFFFFFu;\n      if (fw != 0xFFFFFFFFu) {\n");
+                emit_atomic(c, "gfast_.w[fw]", op, size, v, true);
+                sp(&c->body, "      } else if (ok) {\n");
+            } else {
+                sp(&c->body, "      if (ok) {\n");
+            }
+            emit_atomic(c, "gmem_.w[uint(ga >> 2)]", op, size, v, true);
+            sp(&c->body, "      }\n");
+            if (!red && d != RZ) {
+                c->reg_used[d] = 1;
+                sp(&c->body, "      r%d = ao_;\n", d);
+            }
+            sp(&c->body, "    }\n");
+        }
+    } else if (OPM(0xec00000000000000ull, 0xff00000000000000ull)) {  // ATOMS
+        // an atomic op on workgroup shared memory, the old value into rd: [ra + (offset << 2)]
+        int size = (int)bits(w, 28, 2), op = (int)bits(w, 52, 4);
+        int32_t off = (int32_t)sbits(w, 30, 22) * 4;
+        char nv[512], m[64];
+        if (!atom_new(nv, op, size, "o", "v")) {
+            fail(c, "ATOMS op %d size %d", op, size);
+        } else {
+            c->uses_shared = true;
+            const char *v = R((int)bits(w, 20, 8));
+            if (a == RZ) sp(&c->body, "    { uint ao_ = 0u; uint la = %du;\n", off);
+            else sp(&c->body, "    { uint ao_ = 0u; uint la = (%s + %du);\n", R(a), (uint32_t)off);
+            sprintf(m, "smem[(la >> 2) & %uu]", SMEM_WORDS - 1);
+            emit_atomic(c, m, op, size, v, c->glsl && c->stage == STAGE_COMPUTE);
+            if (d != RZ) {
+                c->reg_used[d] = 1;
+                sp(&c->body, "      r%d = ao_;\n", d);
+            }
+            sp(&c->body, "    }\n");
+        }
+    } else if (OPM(0x3a00000000000000ull, 0xfe00000000000000ull)) {  // VMNMX
+        // VMNMX d = op(min / max(a, b), c): video min / max of a byte, half or word of a and b (formats: 0-3 a byte,
+        // 4-5 a half, 6 the word; each signed or not), then with c by op: 0 / 1 merged into its high / low half,
+        // 2 / 3 into its byte 0 / 2, 4 added, 5 min, 6 max. TOTK: 3-way min and clamps, all words.
+        int fa = (int)bits(w, 36, 3), fb = (int)bits(w, 28, 3), op = (int)bits(w, 51, 3);
+        bool sa = bits(w, 48, 1), sb = bits(w, 49, 1), breg = bits(w, 50, 1);
+        if (bits(w, 47, 1) || bits(w, 54, 1) || op == 7) {
+            fail(c, "VMNMX cc %d sat %d op %d", (int)bits(w, 47, 1), (int)bits(w, 54, 1), op);
+        } else {
+            char ea[128], eb[128], lhs[512];
+            const char *rb = breg ? R((int)bits(w, 20, 8)) : NULL;
+            // a byte / half / word of a register, zero- or sign-extended
+            #define VOPND(out, r, f, s) do { \
+                if ((f) >= 6) sprintf(out, "%s", r); \
+                else if ((f) >= 4) sprintf(out, (s) ? "uint(int(%s << %du) >> 16)" : "((%s >> %du) & 0xFFFFu)", r, (s) ? 16 - ((f) - 4) * 16 : ((f) - 4) * 16); \
+                else sprintf(out, (s) ? "uint(int(%s << %du) >> 24)" : "((%s >> %du) & 0xFFu)", r, (s) ? 24 - (f) * 8 : (f) * 8); \
+            } while (0)
+            VOPND(ea, R(a), fa, sa);
+            if (breg) VOPND(eb, rb, fb, sb);
+            else sprintf(eb, "0x%08xu", sb ? (uint32_t)(int32_t)(int16_t)bits(w, 20, 16) : (uint32_t)bits(w, 20, 16));
+            #undef VOPND
+            const char *mm = bits(w, 55, 1) ? "max" : "min";
+            if (sb) sprintf(lhs, "uint(%s(int(%s), int(%s)))", mm, ea, eb);  // (the first one's sign: b's)
+            else sprintf(lhs, "%s(%s, %s)", mm, ea, eb);
+            const char *cv = R((int)bits(w, 39, 8));
+            switch (op) {
+            case 0: sprintf(t, "((%s & 0x0000FFFFu) | (%s << 16))", cv, lhs); break;
+            case 1: sprintf(t, "((%s & 0xFFFF0000u) | (%s & 0xFFFFu))", cv, lhs); break;
+            case 2: sprintf(t, "((%s & 0xFFFFFF00u) | (%s & 0xFFu))", cv, lhs); break;
+            case 3: sprintf(t, "((%s & 0xFF00FFFFu) | ((%s & 0xFFu) << 16))", cv, lhs); break;
+            case 4: sprintf(t, "(%s + %s)", lhs, cv); break;
+            default:  // (the second one's sign: a's)
+                if (sa) sprintf(t, "uint(%s(int(%s), int(%s)))", op == 5 ? "min" : "max", lhs, cv);
+                else sprintf(t, "%s(%s, %s)", op == 5 ? "min" : "max", lhs, cv);
+            }
+            set_reg(c, d, t);
+        }
+    } else if (OPM(0x5bd0000000000000ull, 0xfff8000000000000ull) || OPM(0x4bd0000000000000ull, 0xfff8000000000000ull) ||
+               OPM(0x36d0000000000000ull, 0xfef8000000000000ull) || OPM(0x5bd8000000000000ull, 0xfff8000000000000ull) ||
+               OPM(0x1800000000000000ull, 0xfc00000000000000ull)) {  // LEA, LEA.HI
+        // LEA d = base + (a << scale); LEA.HI d = base + low word of ((c:a) >> (32 - scale)) - a 64-bit index scaled
+        // into an address's high word. .NEG negates a (a:c); .X (carry in) and .CC aren't done.
+        bool hi = OPM(0x5bd8000000000000ull, 0xfff8000000000000ull) || OPM(0x1800000000000000ull, 0xfc00000000000000ull);
+        bool hcb = OPM(0x1800000000000000ull, 0xfc00000000000000ull);
+        int scale = (int)(hcb ? bits(w, 51, 5) : hi ? bits(w, 28, 5) : bits(w, 39, 5));
+        bool neg = hcb ? bits(w, 56, 1) : hi ? bits(w, 37, 1) : bits(w, 45, 1);
+        bool x = hcb ? bits(w, 57, 1) : hi ? bits(w, 38, 1) : bits(w, 46, 1);
+        if (x || bits(w, 47, 1) || bits(w, 48, 3) != PT) {
+            fail(c, "LEA x %d cc %d pred %d", (int)x, (int)bits(w, 47, 1), (int)bits(w, 48, 3));
+        } else {
+            char cb[128];
+            const char *base = hcb ? cbuf_ref(c, (int)bits(w, 34, 5), bits(w, 20, 14) * 4, NULL, cb) : B(false);
+            if (!hi) {
+                sprintf(t, neg ? "(%s + ((0u - %s) << %du))" : "(%s + (%s << %du))", base, R(a), scale);
+                set_reg(c, d, t);
+            } else {
+                const char *lo = R(a), *hw = R((int)bits(w, 39, 8));
+                if (neg) sp(&c->body, "    { uint lo_ = 0u - %s; uint hi_ = ~%s + uint(%s == 0u);\n", lo, hw, lo);
+                else sp(&c->body, "    { uint lo_ = %s; uint hi_ = %s;\n", lo, hw);
+                if (scale == 0) sprintf(t, "hi_");
+                else sprintf(t, "((lo_ >> %du) | (hi_ << %du))", 32 - scale, scale);
+                if (d != RZ) {
+                    c->reg_used[d] = 1;
+                    sp(&c->body, "      r%d = %s + %s;\n", d, base, t);
+                }
+                sp(&c->body, "    }\n");
+            }
+        }
     } else if (OPM(0xef10000000000000ull, 0xfff8000000000000ull)) {  // SHFL
         int mode = (int)bits(w, 30, 2);
         char bb[32];
@@ -2561,6 +2750,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     Str s = {0};
     sp(&s, "#version 460\n");
     if (!maxwell_no_int64) sp(&s, "#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require\n");
+    if (c->uses_vote) sp(&s, "#extension GL_KHR_shader_subgroup_vote : require\n#extension GL_KHR_shader_subgroup_ballot : require\n");
     sp(&s, "%s", glsl_prelude);
     if (maxwell_no_int64) sp(&s, "%s", glsl_int32_helpers);
     if (maxwell_native_half && stage != STAGE_VERTEX) {
