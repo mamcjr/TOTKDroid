@@ -4542,7 +4542,8 @@ static CsProg *compute_program(NvnProgram *np) {
         k.gmem_linear_lookup = vk_driver_is_qualcomm();
     }
 #endif
-    cp->si = maxwell_translate((const uint8_t *)(uintptr_t)ss->code_addr, ss->const_offset ? ss->const_offset : 0x10000, STAGE_COMPUTE, &k);
+    cp->si = maxwell_translate((const uint8_t *)(uintptr_t)(ss->code_addr + ss->code_skip),
+                               (ss->const_offset ? ss->const_offset : 0x10000) - ss->code_skip, STAGE_COMPUTE, &k);
     pthread_mutex_unlock(&translate_lock);
     cp->p.vi = cp->si;
     if (!cp->si->msl) {

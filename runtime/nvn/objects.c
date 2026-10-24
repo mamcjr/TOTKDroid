@@ -1209,9 +1209,14 @@ static void set_shaders(Cpu *c, int stride) {
         case 3: stage = 4; break;  // tess eval
         default: stage = 5; break; // compute (no SPH)
         }
-        if (*(uint32_t *)(uintptr_t)code != 0x12345678) stage = 5;
+        // The NVN header's magic: 0x12345678 before a graphics stage's SPH (0x30) and code (0x80); 0x12345679 before a
+        // compute program, whose code starts at 0x100 (TOTK's - its translation read the header as code, "unknown
+        // instruction 0 at 0x8"). LAS's and BOTW's compute programs had no header: code from the start.
+        uint32_t magic = *(uint32_t *)(uintptr_t)code;
+        if (magic != 0x12345678) stage = 5;
         p->stages[stage].stage = stage;
         p->stages[stage].code_addr = code;
+        p->stages[stage].code_skip = magic == 0x12345679 ? 0x100 : 0;
         p->stages[stage].control = control;
         p->stages[stage].const_offset = *(const uint32_t *)(control + 0x700);
         p->stages[stage].const_size = *(const uint32_t *)(control + 0x6FC);
