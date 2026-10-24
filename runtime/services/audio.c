@@ -689,7 +689,12 @@ static void *renderer_tick(void *arg) {
     return NULL;
 }
 
-static void update_voice(Renderer *r, Voice *v, const uint8_t *p, uint8_t *out) {
+// A voice's parameters: 0x170 bytes, or 0x188 with float biquads (TOTK's REV15): two BiquadFilterParameter2 at 0x24
+// (enable, 3 reserved, f32 numerator[3], denominator[2]: 0x18 each, not the 0xC of Q14 ones) and everything after
+// them 0x18 further on - read at the old offsets, every voice after the first was garbage, wave buffers at
+// 0x380000000000, and a new game crashed as its sounds started.
+static void update_voice(Renderer *r, Voice *v, const uint8_t *p, uint8_t *out, bool float_bq) {
+    const int s = float_bq ? 0x18 : 0;  // (the fields after the biquads)
     uint8_t is_new = p[8];
     if (is_new) {
         memset(v, 0, sizeof *v);
@@ -711,28 +716,28 @@ static void update_voice(Renderer *r, Voice *v, const uint8_t *p, uint8_t *out) 
     v->chans = ch > 6 ? 6 : (uint8_t)ch;
     memcpy(&v->pitch, p + 28, 4);
     memcpy(&v->volume, p + 32, 4);
-    memcpy(&v->wb_count, p + 60, 4);
-    memcpy(&v->ds_addr, p + 72, 8);
-    memcpy(&v->mix_id, p + 88, 4);
-    memcpy(&v->splitter_id, p + 92, 4);
-    memcpy(v->chan_ids, p + 320, 24);
-    v->flush += p[345];
-    memcpy(&v->behaviour, p + 348, 2);
-    if (p[344]) v->drop = 0;
+    memcpy(&v->wb_count, p + 60 + s, 4);
+    memcpy(&v->ds_addr, p + 72 + s, 8);
+    memcpy(&v->mix_id, p + 88 + s, 4);
+    memcpy(&v->splitter_id, p + 92 + s, 4);
+    memcpy(v->chan_ids, p + 320 + s, 24);
+    v->flush += p[345 + s];
+    memcpy(&v->behaviour, p + 348 + s, 2);
+    if (p[344 + s]) v->drop = 0;
     for (int f = 0; f < 2; f++) {  // BiquadFilterParameter: enable, reserved, s16 numerator[3], denominator[2] (Q14)
-        const uint8_t *b = p + 36 + f * 12;
-        if (b[0] && !v->bq_on[f]) {
-            v->bq_reset[f] = 1;
-            if (getenv("LARECOMP_AUDIO_LOG")) {
-                int16_t k[5];
-                memcpy(k, b + 2, 10);
-                LOG("[audren] v%ld biquad%d on: %d %d %d / %d %d\n", (long)(v - r->voice), f, k[0], k[1], k[2], k[3], k[4]);
-            }
-        }
+        const uint8_t *b = p + 36 + f * (float_bq ? 0x18 : 12);
+        if (b[0] && !v->bq_on[f]) v->bq_reset[f] = 1;
         v->bq_on[f] = b[0];
-        int16_t c[5];
-        memcpy(c, b + 2, 10);
-        for (int k = 0; k < 5; k++) v->bq[f][k] = c[k] / 16384.0f;
+        if (float_bq) {
+            memcpy(v->bq[f], b + 4, 5 * sizeof(float));
+        } else {
+            int16_t c[5];
+            memcpy(c, b + 2, 10);
+            for (int k = 0; k < 5; k++) v->bq[f][k] = c[k] / 16384.0f;
+        }
+        if (b[0] && v->bq_reset[f] && getenv("LARECOMP_AUDIO_LOG"))
+            LOG("[audren] v%ld biquad%d on: %.4f %.4f %.4f / %.4f %.4f\n", (long)(v - r->voice), f, v->bq[f][0], v->bq[f][1],
+                v->bq[f][2], v->bq[f][3], v->bq[f][4]);
     }
     if (v->splitter_id != 0xFFFFFFFF && v->mix_id < 0) {
         static int warned;
@@ -742,7 +747,7 @@ static void update_voice(Renderer *r, Voice *v, const uint8_t *p, uint8_t *out) 
     if (is_new)
         for (int c = 0; c < v->chans; c++) memset(r->chst[v->chan_ids[c] % r->voices].valid, 0, WB_COUNT);
     for (int i = 0; i < WB_COUNT; i++) {
-        const uint8_t *w = p + 96 + i * 0x38;
+        const uint8_t *w = p + 96 + s + i * 0x38;
         WaveBuf *wb = &v->wb[i];
         if (!cs0->valid[i] && wb->sent) wb->addr = 0;
         if (!w[26]) {  // !SentToServer: a new buffer for the DSP
@@ -840,14 +845,23 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
         if (dump_n < 0) dump_n = getenv("LARECOMP_AUDIO_DUMP") ? 1 : 0;
         count++;
         if (dump_n && (count == 300 || count == 2000 || count == 6000 || count == 12000)) {
-            char path[64];
-            snprintf(path, sizeof path, "build/audren_in_%ld.bin", count);
+            // (LARECOMP_AUDIO_DUMP=<folder>: there instead of build/ - Android: the app's internal files, which
+            // run-as reads; its external folder is out of the shell's reach)
+            const char *dir = getenv("LARECOMP_AUDIO_DUMP");
+            char path[1100];
+            snprintf(path, sizeof path, "%s/audren_in_%ld.bin", strcmp(dir, "1") ? dir : "build", count);
             FILE *f = fopen(path, "wb");
             if (f) { fwrite(ip, 1, in->size, f); fclose(f); }
             LOG("[audren] dumped %s (%llu bytes, rev %08x)\n", path, (unsigned long long)in->size, r->revision);
         }
     }
-    uint32_t npools = pools_sz / 0x20, nvoices = voices_sz / 0x170, neffects = effects_sz / 0xC0;
+    uint32_t vsz = r->voices && voices_sz % r->voices == 0 ? voices_sz / r->voices : 0x170;
+    if (vsz != 0x170 && vsz != 0x188) {
+        static int warned;
+        if (!warned++) LOG("[audren] voices of %#x bytes (%u for %u voices): read as 0x170\n", vsz, voices_sz, r->voices);
+        vsz = 0x170;
+    }
+    uint32_t npools = pools_sz / 0x20, nvoices = voices_sz / vsz, neffects = effects_sz / 0xC0;
     uint32_t nchans = chans_sz / 0x70, nsinks = sinks_sz / 0x140;
     if (nvoices > r->voices) nvoices = r->voices;
     if (nchans > r->voices) nchans = r->voices;
@@ -873,14 +887,16 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
         r->chres[id].used = c[0x64];
         if (c[0x64]) memcpy(r->chres[id].mix, c + 4, sizeof r->chres[id].mix);
     }
-    // voices
+    // voices: each the section's size over the renderer's voice count (0x170; 0x188 with float biquads: REV15)
     const uint8_t *vin = cin + chans_sz;
     oh[3] = r->voices * 0x10;
     for (uint32_t i = 0; i < r->voices; i++) r->voice[i].in_use = 0;
+    uint32_t vout = o;
     for (uint32_t i = 0; i < nvoices && o + 0x10 <= out->size; i++, o += 0x10) {
-        const uint8_t *v = vin + i * 0x170;
-        if (v[9]) update_voice(r, &r->voice[i], v, op + o);
+        const uint8_t *v = vin + i * vsz;
+        if (v[9]) update_voice(r, &r->voice[i], v, op + o, vsz == 0x188);
     }
+    o = vout + oh[3];  // (the status of every voice, as the header says, whatever came in)
     // effects (not processed): report them as enabled/disabled per request
     const uint8_t *ein = vin + voices_sz;
     // (REV9 on, BOTW 1.8.2's SDK 20 is REV13: an effect's status is 0x90 bytes, its result state after the first 0x10)
