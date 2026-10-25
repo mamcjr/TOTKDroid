@@ -326,7 +326,15 @@ NVN(nvnEventInitialize) {
     RET(1);
 }
 NVN(nvnEventFinalize) { (void)c; }
-NVN(nvnEventGetValue) { RET(*(uint32_t *)(uintptr_t)event_addr(A(0))); }
+void renderer_events_poll(void);  // (vulkan/exec.c: the values of finished submissions' SignalEvents)
+NVN(nvnEventGetValue) {
+    renderer_events_poll();
+    uint32_t v = __atomic_load_n((uint32_t *)(uintptr_t)event_addr(A(0)), __ATOMIC_ACQUIRE);
+    static int nlog;
+    if (ENV("LARECOMP_LOG_EVENTS") && nlog++ < 60)
+        LOG("[nvn] EventGetValue %llx -> %u (lr %llx)\n", (unsigned long long)event_addr(A(0)), v, (unsigned long long)c->x[30]);
+    RET(v);
+}
 NVN(nvnEventSignal) { *(uint32_t *)(uintptr_t)event_addr(A(0)) = (uint32_t)A(2); }
 NVN(nvnEventGetMemoryPool) { RET(G(uint64_t, A(0), 8)); }
 NVN(nvnEventGetMemoryOffset) { RET(G(uint64_t, A(0), 16)); }

@@ -499,9 +499,49 @@ static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: it
     q->n = 0;
 }
 
+// ---- events the GPU signals (nvnCommandBufferSignalEvent): the value lands in the event's memory when the
+// submission holding the command is done, as the GPU writes it there - the game reads it (nvnEventGetValue) to see how
+// far the GPU got. They were recorded and never executed: the game's events never moved.
+typedef struct { uint32_t *addr; uint32_t value; bool add; uint64_t seq; } EventWrite;
+static EventWrite ev_pend[512];
+static uint32_t ev_head, ev_tail;  // (cq_lock) a ring: oldest at ev_head
+static void events_apply(uint64_t done) {  // (cq_lock held)
+    while (ev_head != ev_tail && ev_pend[ev_head % 512].seq <= done) {
+        EventWrite *e = &ev_pend[ev_head++ % 512];
+        __atomic_store_n(e->addr, e->add ? *e->addr + e->value : e->value, __ATOMIC_RELEASE);
+    }
+}
+static void event_signal(const CmdRec *r) {  // SignalEvent(event, mode, location, flags, value)
+    uint64_t ev = r->x[0];
+    uint32_t *addr = ev ? (uint32_t *)(uintptr_t)*(const uint64_t *)(uintptr_t)ev : NULL;  // (nvnEventInitialize: storage at +0)
+    static int nlog, log = -1;  // LARECOMP_LOG_EVENTS=1: the first 60 (and nvnEventGetValue's)
+    if (log < 0) log = getenv("LARECOMP_LOG_EVENTS") != NULL;
+    if (log && nlog++ < 60)
+        LOG("[nvn] SignalEvent %p mode %llu location %llu flags %#llx value %u (submission %llu)\n", (void *)addr,
+            (unsigned long long)r->x[1], (unsigned long long)r->x[2], (unsigned long long)r->x[3], (uint32_t)r->x[4],
+            (unsigned long long)vk_pending_seq());
+    if (!addr || (uint64_t)(uintptr_t)addr < GUEST_LO || (uint64_t)(uintptr_t)addr >= GUEST_HI) return;
+    vk_cmd();  // (the submission these commands go into: vk_pending_seq)
+    pthread_mutex_lock(&cq_lock);
+    if (ev_tail - ev_head == 512) {  // (full: the oldest now, as if its submission were done)
+        EventWrite *e = &ev_pend[ev_head++ % 512];
+        __atomic_store_n(e->addr, e->add ? *e->addr + e->value : e->value, __ATOMIC_RELEASE);
+    }
+    ev_pend[ev_tail++ % 512] = (EventWrite){addr, (uint32_t)r->x[4], r->x[1] == 1, vk_pending_seq()};
+    pthread_mutex_unlock(&cq_lock);
+}
+// nvnEventGetValue (objects.c): events of submissions the GPU has finished since anything waited, written now
+void renderer_events_poll(void) {
+    pthread_mutex_lock(&cq_lock);
+    bool any = ev_head != ev_tail;
+    pthread_mutex_unlock(&cq_lock);
+    if (any) cq_resolve_done(vk_completed_seq());
+}
+
 static void cq_resolve_done(uint64_t done) {  // every slot whose submission is done
     wb_apply(done);
     pthread_mutex_lock(&cq_lock);
+    events_apply(done);
 #ifdef __ANDROID__
     for (;;) {  // oldest first
         int best = -1;
@@ -2236,8 +2276,9 @@ static void translate_program(void *arg) {
         }
         if (match) {
             char path[1100];
-            snprintf(path, sizeof path, "%s/fs_%016llx.glsl", getenv("LARECOMP_DEBUG_DIR") ? getenv("LARECOMP_DEBUG_DIR") : "build",
-                     (unsigned long long)h);
+            snprintf(path, sizeof path, "%s/fs_%016llx_vs%llx.glsl",  // (one per vertex shader it goes with)
+                     getenv("LARECOMP_DEBUG_DIR") ? getenv("LARECOMP_DEBUG_DIR") : "build", (unsigned long long)h,
+                     (unsigned long long)p->code[0]);
             FILE *f = fopen(path, "wb");
             if (f) {
                 fprintf(f, "// fragment shader %016llx (code %llx)\n%s\n// ---- vertex shader (code %llx)\n%s\n",
@@ -3222,6 +3263,15 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                 (unsigned long long)g_cur_fs_hash, stage, k, (unsigned long long)size);
             for (uint64_t i = 0; i < n; i++) LOG(" %g", f[i]);
             LOG("\n");
+            static int nfile;  // (and, with LARECOMP_DEBUG_DIR, the whole buffer: <dir>/cb_<fs>_<frame>_s<stage>_cb<k>_<n>.bin)
+            const char *dir = getenv("LARECOMP_DEBUG_DIR");
+            if (dir && nfile < 64) {
+                char path[1100];
+                snprintf(path, sizeof path, "%s/cb_%016llx_%llu_s%d_cb%d_%d.bin", dir, (unsigned long long)g_cur_fs_hash,
+                         (unsigned long long)renderer_present_count(), stage, k, nfile++);
+                FILE *fp = fopen(path, "wb");
+                if (fp) { fwrite(f, 1, size, fp); fclose(fp); }
+            }
         }
     }
     {   // LARECOMP_LOG_CBUF=<fs hash>: the first floats of the draws of that fragment shader get in cb3 (its stage's
@@ -4796,6 +4846,33 @@ static uint32_t *expand_indices(uint32_t mode, uint32_t count, const void *indic
     return out;
 }
 
+// Primitive restart where Vulkan has none: in a list (Vulkan restarts strips only), or at an index other than the type's
+// all-ones. NVN's GPU starts a new primitive at the restart index in any topology, a list dropping the one it was
+// assembling. Taken as a vertex instead (65535: past the stream, out in the heap), it pulled long spikes out of TOTK's
+// characters. The indices are rewritten: a strip's restarts become all-ones, a list loses them and the primitive cut
+// short before each. isz 2 or 4; the largest real index into *max_index. (Points, lines, triangles, their strips.)
+static VkSpan restart_rewrite(const void *src, uint32_t isz, uint32_t count, uint32_t mode, uint32_t restart,
+                              uint32_t *out_count, uint32_t *max_index) {
+    VkSpan out = vk_transient((uint64_t)count * isz + 4, 4);
+    uint32_t per = mode == 0 ? 1 : mode == 1 ? 2 : mode == 4 ? 3 : 0;  // (0: a strip)
+    uint32_t ones = isz == 2 ? 0xFFFFu : 0xFFFFFFFFu, n = 0, held = 0, m = *max_index;
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t v = isz == 2 ? ((const uint16_t *)src)[i] : ((const uint32_t *)src)[i];
+        if (v == restart) {
+            if (per) n -= held, held = 0;  // (the partial primitive goes)
+            else v = ones;
+        } else if (v > m) m = v;
+        if (per && v == restart) continue;
+        if (isz == 2) ((uint16_t *)out.ptr)[n++] = (uint16_t)v;
+        else ((uint32_t *)out.ptr)[n++] = v;
+        if (per && ++held == per) held = 0;
+    }
+    if (per) n -= held;  // (a primitive the indices end in the middle of)
+    *out_count = n;
+    *max_index = m;
+    return out;
+}
+
 static bool topology(uint32_t mode, VkPrimitiveTopology *t, uint8_t *cls) {
     switch (mode) {
     case 0: *t = VK_PRIMITIVE_TOPOLOGY_POINT_LIST; *cls = 0; return true;
@@ -5392,7 +5469,20 @@ static void draw_(CmdRec *r, bool indexed) {
         inst = (uint32_t)r->x[6] ? (uint32_t)r->x[6] : 1;
         const void *src = (const void *)(uintptr_t)iaddr;
         uint32_t restart = st.prim_restart ? st.restart_index : 0xFFFFFFFFu;
-        if (native && itype != 0) {
+        static int rewrite_on = -1;  // (LARECOMP_NO_RESTART_REWRITE=1: the indices as they are, as before)
+        if (rewrite_on < 0) rewrite_on = !getenv("LARECOMP_NO_RESTART_REWRITE");
+        uint32_t ones = itype == 1 ? 0xFFFFu : 0xFFFFFFFFu;
+        bool rewrite = rewrite_on && st.prim_restart && native && itype != 0 &&
+                       (mode == 0 || mode == 1 || mode == 4 || restart != ones);
+        if (rewrite) {
+            uint32_t isz = itype == 1 ? 2 : 4;
+            itype_vk = itype == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
+            ib = restart_rewrite(src, isz, count, (uint32_t)mode, restart, &icount, &max_index);
+            static int nlog;
+            if (nlog++ < 12)
+                LOG("[vk] primitive restart rewritten: mode %u, %u-bit indices, restart %#x: %u -> %u indices\n", (uint32_t)mode,
+                    isz * 8, restart, count, icount);
+        } else if (native && itype != 0) {
             uint32_t isz = itype == 1 ? 2 : 4;
             itype_vk = itype == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
             icount = count;
@@ -5420,6 +5510,8 @@ static void draw_(CmdRec *r, bool indexed) {
             for (uint32_t i = 0; i < count; i++) { w[i] = s[i] == 0xFF && st.prim_restart ? 0xFFFF : s[i]; if (s[i] > max_index && w[i] != 0xFFFF) max_index = s[i]; }
             itype_vk = VK_INDEX_TYPE_UINT16;
             icount = count;
+            if (rewrite_on && st.prim_restart && (mode == 0 || mode == 1 || mode == 4))  // (a list: restart_rewrite)
+                ib = restart_rewrite(w, 2, count, (uint32_t)mode, 0xFFFF, &icount, &max_index);
         } else {
             uint32_t *e = expand_indices(mode, count, src, (int)itype, 0, &icount);
             for (uint32_t i = 0; i < icount; i++) if (e[i] > max_index) max_index = e[i];
@@ -5464,6 +5556,24 @@ static void draw_(CmdRec *r, bool indexed) {
                     vkCmdBindVertexBuffers(cb, (uint32_t)s, 1, &sp.buf, &zoff);
                 }
                 continue;
+            }
+            {   // LARECOMP_LOG_VREACH=1 (diagnosis): indexed draws whose largest index reads past a stream's bound size
+                static int on = -1, nlog;
+                if (on < 0) on = getenv("LARECOMP_LOG_VREACH") != NULL;
+                if (on && use_index && pp->k.stride[s] && !pp->k.divisor[s] && v.size && nlog < 60) {
+                    uint32_t m = 0;
+                    if (scan_src) {
+                        if (scan_isz == 2) { const uint16_t *q = scan_src; for (uint32_t i = 0; i < icount; i++) if (q[i] > m && q[i] != (uint16_t)scan_restart) m = q[i]; }
+                        else { const uint32_t *q = scan_src; for (uint32_t i = 0; i < icount; i++) if (q[i] > m && q[i] != scan_restart) m = q[i]; }
+                        m += base_vertex > 0 ? (uint32_t)base_vertex : 0;
+                    } else m = max_index ? max_index - 1 : 0;
+                    if ((uint64_t)(m + 1) * pp->k.stride[s] > v.size) {
+                        nlog++;
+                        LOG("[vk] vertex reach: fs %016llx stream %d stride %u size %llu: index %u reads to %llu (frame %llu)\n",
+                            (unsigned long long)g_cur_fs_hash, s, pp->k.stride[s], (unsigned long long)v.size, m,
+                            (unsigned long long)(m + 1) * pp->k.stride[s], (unsigned long long)renderer_present_count());
+                    }
+                }
             }
             if (v.addr && v.size && guest_direct(v.addr, v.size, &dbuf, &doff)) {
                 if (ss_on && (ss.vb_known >> s & 1) && ss.vb[s] == dbuf && ss.vo[s] == doff) continue;
@@ -5540,6 +5650,30 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
                     sn < (uint32_t)st.nstream ? st.stream[sn][0] : 0, sn < (uint32_t)st.nstream ? st.stream[sn][1] : 0,
                     sn < 16 ? (unsigned long long)st.vbuf[sn].addr : 0ull, sn < 16 ? (unsigned long long)st.vbuf[sn].size : 0ull);
             }
+    {   // (LARECOMP_DUMP_CBUF_FS + LARECOMP_DEBUG_DIR: those draws' vertex streams too, <dir>/vb_<fs>_<frame>_<n>_s<stream>.bin)
+        const char *want = g_debug_frame ? getenv("LARECOMP_DUMP_CBUF_FS") : NULL, *dir = getenv("LARECOMP_DEBUG_DIR");
+        static int ndraw;
+        bool hit = false;
+        for (const char *e = want; e && *e && !hit;) {
+            char *end;
+            hit = strtoull(e, &end, 16) == g_cur_fs_hash;
+            if (end == e) break;
+            e = end;
+            while (*e == '+' || *e == ',') e++;
+        }
+        if (hit && dir && ndraw < 32) {
+            for (int sn = 0; sn < 16 && sn < st.nstream; sn++) {
+                if (!st.vbuf[sn].addr || !st.vbuf[sn].size || st.vbuf[sn].size > (16u << 20)) continue;
+                char path[1100];
+                snprintf(path, sizeof path, "%s/vb_%016llx_%llu_%d_s%d.bin", dir, (unsigned long long)g_cur_fs_hash,
+                         (unsigned long long)renderer_present_count(), ndraw, sn);
+                FILE *fp = fopen(path, "wb");
+                if (fp) { fwrite((const void *)(uintptr_t)st.vbuf[sn].addr, 1, st.vbuf[sn].size, fp); fclose(fp); }
+            }
+            LOG("[draw]   (vertex streams dumped as draw %d)\n", ndraw);
+            ndraw++;
+        }
+    }
     if (getenv("LARECOMP_DEBUG_DATA")) {  // vertex streams 0-1 and fragment cbufs: the first floats
         LOG("[draw]   depth range %.9g %.9g offset enables %#x factor %.9g units %.9g clamp %.9g\n",
             st.depth_range[0][0], st.depth_range[0][1], st.poly[3], st.poly_offset[0], st.poly_offset[1], st.poly_offset[2]);
@@ -6630,6 +6764,8 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_DOWNSAMPLE: { const TexRefRec *t = x; copy_texture(&t[0], &t[1], 1); break; }
         case CMD_COPY_BUFFER_TO_TEXTURE: copy_buffer_to_texture(r->x[0], x); break;
         case CMD_COPY_TEXTURE_TO_BUFFER: copy_texture_to_buffer(x, r->x[3]); break;
+        case CMD_SIGNAL_EVENT: event_signal(r); break;
+        case CMD_WAIT_EVENT: break;  // (one queue, in order: what it waits for already ran - or is the CPU's to signal)
         case CMD_COPY_BUFFER_TO_BUFFER:
             wait_why = "buffer -> buffer copy";
             renderer_flush();
