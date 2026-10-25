@@ -736,7 +736,7 @@ static int g_bg_w, g_bg_h;
 static void load_background(GpuDevice dev) {
     if (g_bg) return;
     char artwork[1100];
-    if (rt_resource("launcher-background.png", "assets/artwork/great-plateau-background-v2.png", artwork, sizeof artwork)) {
+    if (rt_resource("launcher-background.png", "assets/artwork/hyrule-sky-islands-background-v1.png", artwork, sizeof artwork)) {
         SDL_Surface *src = SDL_LoadPNG(artwork);
         SDL_Surface *rgba = src ? SDL_ConvertSurface(src, SDL_PIXELFORMAT_RGBA32) : NULL;
         if (src) SDL_DestroySurface(src);
@@ -1134,8 +1134,8 @@ static bool g_open_files;     // Settings > Prelaunch: the Game Files page (vers
 static void prelaunch_tab(float sc) {
     const ImVec4 gold(0.93f, 0.76f, 0.33f, 1);
     auto heading = [&](const char *t) {
-#ifdef __ANDROID__  // (the Sheikah look of the menu's pages)
-        ui_sheikah_heading(t, sc);
+#ifdef __ANDROID__  // (the Zonai look of the menu's pages)
+        ui_zonai_heading(t, sc);
         return;
 #endif
         ImGui::PushFont(g_font_menu);
@@ -1674,8 +1674,8 @@ extern "C" void launcher_run(const char *root) {
                                                           ImGui::GetWindowPos().y + ds.y), IM_COL32(0, 0, 0, 110));
                 ImVec2 wp = ImGui::GetWindowPos();
                 ImGui::SetCursorScreenPos(ImVec2(wp.x + (ds.x - w) * 0.5f, wp.y + (ds.y - h) * 0.5f));
-#ifdef __ANDROID__  // (the Sheikah look, menu.mm tabs_body: its own frame, title and BACK)
-                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.035f, 0.065f, 0.075f, 0.94f));
+#ifdef __ANDROID__  // (the Zonai look, menu.mm tabs_body: its own frame, title and BACK)
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.035f, 0.075f, 0.055f, 0.94f));
                 ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 6 * sc);
 #else
                 ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.06f, 0.09f, 0.08f, 0.96f));

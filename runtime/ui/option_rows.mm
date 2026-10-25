@@ -1,4 +1,4 @@
-// Two-pane settings pages (see option_rows.h) in the Sheikah look (design/sheikah-settings-v1): rows on the left - the
+// Two-pane settings pages (see option_rows.h) in the Zonai look: rows on the left - the
 // label, the value on the right - and the selected row's description on the right, under its name.
 #include <ctype.h>
 #include <math.h>
@@ -31,45 +31,35 @@ void opt_focus_first(bool on) { g_focus_req = on; }
 static bool g_held;  // the last row's left / right has been held a while (steppers go faster)
 void opt_indent(int step) { g_indent = g_indent + step < 0 ? 0 : g_indent + step; }
 
-// ------------------------------------------------------------------ the Sheikah look's pieces (menu.mm uses them too)
-void ui_sheikah_frame(ImDrawList *dl, ImVec2 a, ImVec2 b, ImU32 col, float cut, float thickness) {
+// ------------------------------------------------------------------ the Zonai look's pieces (menu.mm uses them too)
+void ui_zonai_frame(ImDrawList *dl, ImVec2 a, ImVec2 b, ImU32 col, float cut, float thickness) {
     const ImVec2 pts[] = {{a.x + cut, a.y}, {b.x - cut, a.y}, {b.x, a.y + cut}, {b.x, b.y - cut},
                           {b.x - cut, b.y}, {a.x + cut, b.y}, {a.x, b.y - cut}, {a.x, a.y + cut}};
     dl->AddPolyline(pts, 8, col, ImDrawFlags_Closed, thickness);
 }
 
-void ui_sheikah_frame_filled(ImDrawList *dl, ImVec2 a, ImVec2 b, ImU32 col, float cut) {
+void ui_zonai_frame_filled(ImDrawList *dl, ImVec2 a, ImVec2 b, ImU32 col, float cut) {
     const ImVec2 pts[] = {{a.x + cut, a.y}, {b.x - cut, a.y}, {b.x, a.y + cut}, {b.x, b.y - cut},
                           {b.x - cut, b.y}, {a.x + cut, b.y}, {a.x, b.y - cut}, {a.x, a.y + cut}};
     dl->AddConvexPolyFilled(pts, 8, col);
 }
 
-void ui_sheikah_diamond(ImDrawList *dl, ImVec2 c, float r, ImU32 col, bool filled) {
+void ui_zonai_diamond(ImDrawList *dl, ImVec2 c, float r, ImU32 col, bool filled) {
     const ImVec2 pts[] = {{c.x, c.y - r}, {c.x + r, c.y}, {c.x, c.y + r}, {c.x - r, c.y}};
     if (filled) dl->AddConvexPolyFilled(pts, 4, col);
     else dl->AddPolyline(pts, 4, col, ImDrawFlags_Closed, fmaxf(1, r * 0.3f));
 }
 
-// The Sheikah eye: the lid, the pupil, three lashes above and the tear below
-void ui_sheikah_eye(ImDrawList *dl, ImVec2 p, float size, ImU32 col, float thickness) {
-    dl->PathLineTo(ImVec2(p.x - size, p.y));
-    dl->PathBezierCubicCurveTo(ImVec2(p.x - size * 0.4f, p.y - size * 0.65f), ImVec2(p.x + size * 0.4f, p.y - size * 0.65f),
-                               ImVec2(p.x + size, p.y));
-    dl->PathBezierCubicCurveTo(ImVec2(p.x + size * 0.4f, p.y + size * 0.65f), ImVec2(p.x - size * 0.4f, p.y + size * 0.65f),
-                               ImVec2(p.x - size, p.y));
-    dl->PathStroke(col, ImDrawFlags_Closed, thickness);
-    dl->AddCircle(p, size * 0.25f, col, 20, thickness);
-    dl->AddCircleFilled(p, size * 0.1f, col, 12);
-    for (int i = -1; i <= 1; ++i) {
-        float x = p.x + i * size * 0.55f;
-        dl->AddTriangleFilled(ImVec2(x - size * 0.12f, p.y - size * 0.6f), ImVec2(x + size * 0.12f, p.y - size * 0.6f),
-                              ImVec2(x, p.y - size * 0.95f), col);
-    }
-    dl->AddTriangleFilled(ImVec2(p.x - size * 0.14f, p.y + size * 0.4f), ImVec2(p.x + size * 0.14f, p.y + size * 0.4f),
-                          ImVec2(p.x, p.y + size * 1.25f), col);
+// Angular Zonai spiral, kept vector-sharp at every UI scale.
+void ui_zonai_spiral(ImDrawList *dl, ImVec2 p, float size, ImU32 col, float thickness) {
+    const ImVec2 spiral[] = {{-1, 1}, {-1, -1}, {1, -1}, {1, 1},
+                             {-0.55f, 1}, {-0.55f, -0.55f}, {0.55f, -0.55f},
+                             {0.55f, 0.55f}, {0, 0.55f}, {0, 0}};
+    for (const ImVec2 &v : spiral) dl->PathLineTo(ImVec2(p.x + v.x * size, p.y + v.y * size));
+    dl->PathStroke(col, ImDrawFlags_None, thickness);
 }
 
-// ◀ / ▶ (the fonts have no arrow glyphs)
+// Arrow geometry (the fonts have no arrow glyphs).
 static void arrow(ImDrawList *dl, float x, float cy, float s, bool right, ImU32 col) {
     if (right) dl->AddTriangleFilled(ImVec2(x + s, cy), ImVec2(x, cy - s * 0.9f), ImVec2(x, cy + s * 0.9f), col);
     else dl->AddTriangleFilled(ImVec2(x, cy), ImVec2(x + s, cy - s * 0.9f), ImVec2(x + s, cy + s * 0.9f), col);
@@ -157,9 +147,9 @@ void opt_begin(const char *id, float scale) {
     ui_touch_scroll();
 }
 
-void opt_section(const char *title) { ui_sheikah_heading(title, g_scale); }
+void opt_section(const char *title) { ui_zonai_heading(title, g_scale); }
 
-void ui_sheikah_heading(const char *title, float s) {
+void ui_zonai_heading(const char *title, float s) {
     std::string t = ui_upper(tr(title));  // (Portuguese too: the accented letters in capitals)
     if (ImGui::GetCursorPosY() > ImGui::GetStyle().WindowPadding.y + 1) ImGui::Dummy(ImVec2(0, 14 * s));
     ImVec2 p = ImGui::GetCursorScreenPos();
@@ -171,7 +161,7 @@ void ui_sheikah_heading(const char *title, float s) {
     float ly = p.y + fs * 0.55f, lx = p.x + 16 * s + ts.x + 14 * s;
     if (lx < p.x + w - 20 * s) {
         dl->AddLine(ImVec2(lx, ly), ImVec2(p.x + w - 12 * s, ly), IM_COL32(186, 157, 97, 90), 1);
-        ui_sheikah_diamond(dl, ImVec2(p.x + w - 12 * s, ly), 3.5f * s, IM_COL32(186, 157, 97, 140), false);
+        ui_zonai_diamond(dl, ImVec2(p.x + w - 12 * s, ly), 3.5f * s, IM_COL32(186, 157, 97, 140), false);
     }
     ImGui::Dummy(ImVec2(w, fs + 8 * s));
 }
@@ -181,7 +171,7 @@ void ui_sheikah_heading(const char *title, float s) {
 // slider's position, 0..1 (-1: none) - dragging along the selected row's value sets it (g_drag).
 static int row(const char *label, const std::string &value, bool changed, const char *desc, bool upper = false,
                bool arrows = false, float bar = -1) {
-    (void)upper;  // (the Sheikah look writes labels as given; option pages pass them in sentence case)
+    (void)upper;  // (the Zonai look writes labels as given; option pages pass them in sentence case)
     ImGui::PushID(label);  // (the English label: the row's id in any language)
     const char *name = tr(label);  // (what is shown: ui/i18n.mm)
     const std::string shown = value.empty() ? value : std::string(tr(value.c_str()));
@@ -256,14 +246,14 @@ static int row(const char *label, const std::string &value, bool changed, const 
     if (g_desc_first.empty() && g_name_first.empty()) g_desc_first = desc ? desc : "", g_name_first = name;
 
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    const ImU32 cyan = IM_COL32(65, 222, 246, 235), gold = IM_COL32(186, 157, 97, off ? 60 : 110);
+    const ImU32 jade = IM_COL32(91, 224, 166, 235), gold = IM_COL32(186, 157, 97, off ? 60 : 110);
     ImVec2 b(p.x + w, p.y + h - 2 * s);
     if (sel) {
-        dl->AddRectFilled(ImVec2(p.x + 2, p.y + 2 * s), b, IM_COL32(22, 107, 131, off ? 30 : 70), 4 * s);
-        ui_sheikah_frame(dl, ImVec2(p.x + 2, p.y + 2 * s), b, off ? IM_COL32(65, 222, 246, 90) : cyan, 8 * s, 2 * s);
+        dl->AddRectFilled(ImVec2(p.x + 2, p.y + 2 * s), b, IM_COL32(24, 112, 72, off ? 30 : 70), 4 * s);
+        ui_zonai_frame(dl, ImVec2(p.x + 2, p.y + 2 * s), b, off ? IM_COL32(91, 224, 166, 90) : jade, 8 * s, 2 * s);
     } else {
         dl->AddLine(ImVec2(p.x + 10 * s, p.y + h - 1), ImVec2(p.x + w, p.y + h - 1), gold, 1);
-        ui_sheikah_diamond(dl, ImVec2(p.x + 6 * s, p.y + h - 1), 3 * s, gold, false);
+        ui_zonai_diamond(dl, ImVec2(p.x + 6 * s, p.y + h - 1), 3 * s, gold, false);
     }
     float ty = cy - fs * 0.5f;
     ImU32 label_col = off ? IM_COL32(120, 120, 112, 255) : IM_COL32(240, 235, 218, 255);
@@ -284,17 +274,17 @@ static int row(const char *label, const std::string &value, bool changed, const 
         float vy = bar >= 0 && sel ? ty - fs * 0.18f : ty;
         dl->AddText(ImVec2((vx0 + vx1 - vw) * 0.5f, vy), vcol, shown.c_str());
         if (sel && arrows && !off) {
-            arrow(dl, lax, cy, aw, false, cyan);
-            arrow(dl, rax, cy, aw, true, cyan);
+            arrow(dl, lax, cy, aw, false, jade);
+            arrow(dl, rax, cy, aw, true, jade);
         }
         if (bar >= 0 && sel && bx1 > bx0) {  // (a slider: its track under the value, filled to where it is)
             float by = cy + fs * 0.52f, f = g_drag_id == id ? g_drag : bar;
             dl->AddLine(ImVec2(bx0, by), ImVec2(bx1, by), IM_COL32(186, 157, 97, 120), 2 * s);
-            dl->AddLine(ImVec2(bx0, by), ImVec2(bx0 + (bx1 - bx0) * f, by), cyan, 3 * s);
-            dl->AddCircleFilled(ImVec2(bx0 + (bx1 - bx0) * f, by), 5 * s, cyan, 12);
+            dl->AddLine(ImVec2(bx0, by), ImVec2(bx0 + (bx1 - bx0) * f, by), jade, 3 * s);
+            dl->AddCircleFilled(ImVec2(bx0 + (bx1 - bx0) * f, by), 5 * s, jade, 12);
         }
     }
-    if (!sel || !arrows) chevron(dl, p.x + w - pad * 0.9f, cy, fs * 0.22f, off ? IM_COL32(65, 222, 246, 70) : cyan);
+    if (!sel || !arrows) chevron(dl, p.x + w - pad * 0.9f, cy, fs * 0.22f, off ? IM_COL32(91, 224, 166, 70) : jade);
     if (!g_two_panes && sel && desc && *desc) {  // (one pane: the description under the selected row)
         ImGui::PushTextWrapPos(0);
         ImGui::TextColored(ImVec4(0.86f, 0.84f, 0.76f, 0.9f), "%s", desc);
@@ -372,7 +362,7 @@ bool opt_radio(const char *label, bool selected, const char *desc) {
     ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
     float r = ImGui::GetFontSize() * 0.32f, cx = b.x - 40 * g_scale - r, cy = (a.y + b.y) * 0.5f;
     ImDrawList *dl = ImGui::GetWindowDrawList();
-    ImU32 col = off ? IM_COL32(150, 150, 140, 255) : selected ? IM_COL32(65, 222, 246, 235) : IM_COL32(214, 210, 196, 255);
+    ImU32 col = off ? IM_COL32(150, 150, 140, 255) : selected ? IM_COL32(91, 224, 166, 235) : IM_COL32(214, 210, 196, 255);
     dl->AddCircle(ImVec2(cx, cy), r, col, 0, 2.0f);
     if (selected) dl->AddCircleFilled(ImVec2(cx, cy), r * 0.55f, col);
     return chosen && !selected;
@@ -430,8 +420,8 @@ void opt_end(void) {
     const ImU32 gold = IM_COL32(186, 157, 97, 150);
     float lx = p.x + gap * 0.5f;  // (the line between the panes, a diamond at each end)
     dl->AddLine(ImVec2(lx, p.y + 8 * s), ImVec2(lx, p.y + avail.y - 8 * s), gold, 1.0f);
-    ui_sheikah_diamond(dl, ImVec2(lx, p.y + 6 * s), 4 * s, gold, false);
-    ui_sheikah_diamond(dl, ImVec2(lx, p.y + avail.y - 6 * s), 4 * s, gold, false);
+    ui_zonai_diamond(dl, ImVec2(lx, p.y + 6 * s), 4 * s, gold, false);
+    ui_zonai_diamond(dl, ImVec2(lx, p.y + avail.y - 6 * s), 4 * s, gold, false);
     ImGui::SetCursorScreenPos(ImVec2(p.x + gap, p.y));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18 * s, 10 * s));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
@@ -439,9 +429,9 @@ void opt_end(void) {
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
     ImVec2 cp = ImGui::GetWindowPos(), cs = ImGui::GetWindowSize();
-    // the watermark first: the Sheikah eye, faint, low in the pane
-    ui_sheikah_eye(dl = ImGui::GetWindowDrawList(), ImVec2(cp.x + cs.x * 0.5f, cp.y + cs.y * 0.7f), fminf(cs.x * 0.17f, 70 * s),
-                   IM_COL32(45, 150, 180, 45), 2 * s);
+    // the watermark first: the Zonai spiral, faint, low in the pane
+    ui_zonai_spiral(dl = ImGui::GetWindowDrawList(), ImVec2(cp.x + cs.x * 0.5f, cp.y + cs.y * 0.7f), fminf(cs.x * 0.17f, 70 * s),
+                   IM_COL32(48, 158, 108, 45), 2 * s);
     std::string name = ui_upper(g_name_shown.c_str());
     ImGui::PushTextWrapPos(0);
     ImGui::TextColored(ImVec4(0.90f, 0.85f, 0.70f, 1), "%s", name.c_str());
@@ -450,7 +440,7 @@ void opt_end(void) {
         ImVec2 q = ImGui::GetCursorScreenPos();
         float w = ImGui::GetContentRegionAvail().x, y = q.y + 6 * s;
         dl->AddLine(ImVec2(q.x, y), ImVec2(q.x + w, y), gold, 1.0f);
-        ui_sheikah_diamond(dl, ImVec2(q.x + w * 0.5f, y), 4 * s, gold, true);
+        ui_zonai_diamond(dl, ImVec2(q.x + w * 0.5f, y), 4 * s, gold, true);
         ImGui::Dummy(ImVec2(w, 18 * s));
     }
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.86f, 0.84f, 0.78f, 1));

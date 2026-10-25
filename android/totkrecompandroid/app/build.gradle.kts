@@ -90,9 +90,9 @@ android {
 val prepareTotkRecompAndroid by tasks.registering {
     val smaa = repo.resolve("third_party/smaa/SMAA.hlsl")
     val font = repo.resolve("third_party/fonts/Baloo2/Baloo2-SemiBold.ttf")
-    val icon = repo.resolve("assets/artwork/totk-icon-v1.png")
-    val background = repo.resolve("assets/artwork/great-plateau-background-v2.png")
-    val touchSkin = repo.resolve("assets/artwork/sheikah-touch-atlas-v1.png")
+    val icon = repo.resolve("assets/artwork/totk-zonai-icon-v1.png")
+    val background = repo.resolve("assets/artwork/hyrule-sky-islands-background-v1.png")
+    val touchSkin = repo.resolve("assets/artwork/zonai-touch-atlas-v1.png")
     val libs = listOf("libSDL3.so", "libshaderc_shared.so", "libavcodec.so", "libavformat.so", "libavutil.so", "libswscale.so")
     inputs.files(smaa, font, icon, background, touchSkin)
     inputs.files(libs.map { deps.resolve("lib/$it") }.filter { it.exists() })
@@ -117,7 +117,7 @@ val prepareTotkRecompAndroid by tasks.registering {
         deps.resolve("fonts/DejaVuSans.ttf").copyTo(out.resolve("assets/res/DejaVuSans.ttf"), overwrite = true)
         icon.copyTo(out.resolve("assets/res/icon.png"), overwrite = true)
         background.copyTo(out.resolve("assets/res/launcher-background.png"), overwrite = true)
-        touchSkin.copyTo(out.resolve("assets/res/sheikah-touch-atlas.png"), overwrite = true)
+        touchSkin.copyTo(out.resolve("assets/res/zonai-touch-atlas.png"), overwrite = true)
         icon.copyTo(out.resolve("res/mipmap-xxxhdpi/ic_launcher.png"), overwrite = true)
         // the game code's builder (docs/las/ANDROID-PORT.md, Fase 6; android/deps/build_gen_deps.sh): its programs and
         // libraries as native libraries (Android runs binaries only from nativeLibraryDir), the rest as assets/gen

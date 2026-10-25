@@ -15,6 +15,7 @@ helper = src[src.index('void ui_touch_scroll() {'):src.index('\n#ifdef __ANDROID
 preamble = r"""
 #define __ANDROID__ 1
 typedef unsigned ImGuiID;
+static ImGuiID g_drag_id; // active option-row slider, read by the scroll helper
 struct ImGuiContext { int unused; };
 struct ImVec2 { float x, y; };
 struct ImGuiIO { int MouseSource; ImVec2 MousePos; bool MouseDown[1]; };

@@ -348,11 +348,11 @@ static void style_init(void) {
     c[ImGuiCol_NavCursor] = gold;
     c[ImGuiCol_Separator] = ImVec4(0.30f, 0.36f, 0.30f, 1);
     c[ImGuiCol_TitleBg] = c[ImGuiCol_TitleBgActive] = c[ImGuiCol_WindowBg];
-#ifdef __ANDROID__  // (the Sheikah look, design/sheikah-settings-v1: charcoal blue, cyan where something is picked)
-    ImVec4 teal(0.05f, 0.11f, 0.13f, 0.95f), teal_hot(0.08f, 0.25f, 0.30f, 1), teal_on(0.10f, 0.36f, 0.42f, 1), cyan(0.25f, 0.87f, 0.96f, 1);
-    c[ImGuiCol_WindowBg] = ImVec4(0.035f, 0.065f, 0.075f, 0.92f);
+#ifdef __ANDROID__  // (the Zonai look, assets/artwork/zonai-menu-concept-v1.png: forest-green stone, jade where something is picked)
+    ImVec4 teal(0.05f, 0.12f, 0.08f, 0.95f), teal_hot(0.08f, 0.28f, 0.18f, 1), teal_on(0.10f, 0.38f, 0.24f, 1), jade(0.36f, 0.88f, 0.65f, 1);
+    c[ImGuiCol_WindowBg] = ImVec4(0.035f, 0.075f, 0.055f, 0.92f);
     c[ImGuiCol_ChildBg] = ImVec4(0, 0, 0, 0);
-    c[ImGuiCol_PopupBg] = ImVec4(0.035f, 0.065f, 0.075f, 0.98f);
+    c[ImGuiCol_PopupBg] = ImVec4(0.035f, 0.075f, 0.055f, 0.98f);
     c[ImGuiCol_Text] = ImVec4(0.94f, 0.92f, 0.85f, 1);
     c[ImGuiCol_Border] = ImVec4(0.73f, 0.62f, 0.38f, 0.55f);
     c[ImGuiCol_FrameBg] = teal;
@@ -364,10 +364,10 @@ static void style_init(void) {
     c[ImGuiCol_Header] = teal_hot;
     c[ImGuiCol_HeaderHovered] = teal_on;
     c[ImGuiCol_HeaderActive] = teal_on;
-    c[ImGuiCol_CheckMark] = cyan;
-    c[ImGuiCol_SliderGrab] = ImVec4(0.25f, 0.70f, 0.80f, 1);
-    c[ImGuiCol_SliderGrabActive] = cyan;
-    c[ImGuiCol_NavCursor] = cyan;
+    c[ImGuiCol_CheckMark] = jade;
+    c[ImGuiCol_SliderGrab] = ImVec4(0.25f, 0.70f, 0.48f, 1);
+    c[ImGuiCol_SliderGrabActive] = jade;
+    c[ImGuiCol_NavCursor] = jade;
     c[ImGuiCol_Separator] = ImVec4(0.73f, 0.62f, 0.38f, 0.45f);
     c[ImGuiCol_ScrollbarGrab] = ImVec4(0.30f, 0.33f, 0.32f, 0.8f);
     s.FrameRounding = 4; s.ChildRounding = 4; s.WindowRounding = 6;
@@ -444,10 +444,10 @@ static void drain_events(ImGuiIO &io) {
     }
 }
 
-// Section header in the big font (Android: the Sheikah look's heading).
+// Section header in the big font (Android: the Zonai look's heading).
 static void header(const char *t) {
 #ifdef __ANDROID__
-    ui_sheikah_heading(t, ImGui::GetFontSize() / 34);
+    ui_zonai_heading(t, ImGui::GetFontSize() / 34);
     return;
 #endif
     ImGui::PushFont(g_font_big);
@@ -847,7 +847,7 @@ extern "C" int menu_keyboard_run(const char *initial, int max_len, char *out, in
 extern "C" void mods_tab_draw(float scale);  // ui/mods_tab.mm
 #endif
 #ifdef __ANDROID__
-// The Sheikah menu's tab icons, drawn (r: half their size): files (a folder), video (a screen), audio (a speaker),
+// The Zonai menu's tab icons, drawn (r: half their size): files (a folder), video (a screen), audio (a speaker),
 // controls (two Joy-Con), mods (a box), quit (a door)
 static void settings_icon(ImDrawList *dl, int id, ImVec2 c, float r, ImU32 col, float scale) {
     float t = fmaxf(1.5f, 2.2f * scale);
@@ -897,9 +897,9 @@ static void settings_icon(ImDrawList *dl, int id, ImVec2 c, float r, ImU32 col, 
     }
 }
 
-// A Sheikah button: dark, a gold frame with cut corners (cyan while pressed or under the cursor), an icon on the left
+// A Zonai button: dark, a gold frame with cut corners (jade while pressed or under the cursor), an icon on the left
 // (0: back, a chevron; 1: restore, a circling arrow) and the label
-static bool sheikah_button(const char *label, ImVec2 size, int icon, float scale) {
+static bool zonai_button(const char *label, ImVec2 size, int icon, float scale) {
     ImGui::PushID(label);
     ImVec2 a = ImGui::GetCursorScreenPos();
     ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
@@ -908,8 +908,8 @@ static bool sheikah_button(const char *label, ImVec2 size, int icon, float scale
     bool hot = ImGui::IsItemActive() || (ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible);
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 b(a.x + size.x, a.y + size.y);
-    ui_sheikah_frame_filled(dl, a, b, hot ? IM_COL32(22, 80, 98, 230) : IM_COL32(10, 22, 26, 225), 12 * scale);
-    ui_sheikah_frame(dl, a, b, hot ? IM_COL32(65, 222, 246, 240) : IM_COL32(186, 157, 97, 220), 12 * scale, 2.2f * scale);
+    ui_zonai_frame_filled(dl, a, b, hot ? IM_COL32(22, 80, 51, 230) : IM_COL32(12, 25, 19, 225), 12 * scale);
+    ui_zonai_frame(dl, a, b, hot ? IM_COL32(91, 224, 166, 240) : IM_COL32(186, 157, 97, 220), 12 * scale, 2.2f * scale);
     float fs = ImGui::GetFontSize(), cy = a.y + size.y * 0.5f, ix = a.x + 34 * scale, r = fs * 0.32f, t = 2.6f * scale;
     ImU32 col = IM_COL32(240, 235, 218, 255);
     if (icon == 0) {
@@ -965,8 +965,8 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     for (int i : order)  // (Quit: in game only - the start screen has its own QUIT)
         if (i != 9 || !prelaunch) tabs[ntabs++] = {names[i], i, true};
 #ifdef __ANDROID__
-    // The Sheikah look (design/sheikah-settings-v1): the window's gold frame with cut corners, the eye over the title,
-    // the pages as tabs along the top (an icon and the name, the open one underlined in cyan), the page (option rows
+    // The Zonai look: the window's gold frame with cut corners, the spiral over the title,
+    // the pages as tabs along the top (an icon and the name, the open one underlined in jade), the page (option rows
     // with their description on the right: option_rows.mm), and BACK / RESTORE DEFAULTS under it. The page ids stay
     // (LARECOMP_MENU_TAB, the controller's L / R).
     if (g_tab_request_ext != -2) { g_tab_request = g_tab_request_ext; g_tab_request_ext = -2; }
@@ -984,17 +984,17 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
             g_tab = tabs[index].id;
         }
     }
-    const ImU32 gold = IM_COL32(186, 157, 97, 210), gold_dim = IM_COL32(186, 157, 97, 110), cyan = IM_COL32(65, 222, 246, 240);
+    const ImU32 gold = IM_COL32(186, 157, 97, 210), gold_dim = IM_COL32(186, 157, 97, 110), jade = IM_COL32(91, 224, 166, 240);
     const ImU32 ivory = IM_COL32(240, 235, 218, 255);
     ImDrawList *wdl = ImGui::GetWindowDrawList();
     ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
-    ui_sheikah_frame(wdl, ImVec2(wp.x + 3 * scale, wp.y + 3 * scale), ImVec2(wp.x + ws.x - 3 * scale, wp.y + ws.y - 3 * scale), gold,
+    ui_zonai_frame(wdl, ImVec2(wp.x + 3 * scale, wp.y + 3 * scale), ImVec2(wp.x + ws.x - 3 * scale, wp.y + ws.y - 3 * scale), gold,
                      22 * scale, 2.5f * scale);
-    ui_sheikah_frame(wdl, ImVec2(wp.x + 11 * scale, wp.y + 11 * scale), ImVec2(wp.x + ws.x - 11 * scale, wp.y + ws.y - 11 * scale),
+    ui_zonai_frame(wdl, ImVec2(wp.x + 11 * scale, wp.y + 11 * scale), ImVec2(wp.x + ws.x - 11 * scale, wp.y + ws.y - 11 * scale),
                      IM_COL32(186, 157, 97, 60), 17 * scale, 1);
-    {   // the eye, the title between two lines with diamonds
+    {   // the spiral, the title between two lines with diamonds
         float cx = wp.x + ws.x * 0.5f, ey = wp.y + 26 * scale;
-        ui_sheikah_eye(wdl, ImVec2(cx, ey), 15 * scale, cyan, 2 * scale);
+        ui_zonai_spiral(wdl, ImVec2(cx, ey), 15 * scale, jade, 2 * scale);
         const std::string title_s = ui_upper(tr("Settings"));
         const char *title = title_s.c_str();
         auto next_char = [](const char *c) {  // (a whole UTF-8 character: Ç, Õ)
@@ -1014,7 +1014,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
         float ly = ty + tsz * 0.55f, l0 = tw * 0.5f + 26 * scale, l1 = l0 + 150 * scale;
         for (int side = -1; side <= 1; side += 2) {
             wdl->AddLine(ImVec2(cx + side * l0, ly), ImVec2(cx + side * l1, ly), gold_dim, 1.5f * scale);
-            ui_sheikah_diamond(wdl, ImVec2(cx + side * l0, ly), 5 * scale, gold, false);
+            ui_zonai_diamond(wdl, ImVec2(cx + side * l0, ly), 5 * scale, gold, false);
         }
         ImGui::Dummy(ImVec2(0, ty + tsz + 8 * scale - ImGui::GetCursorScreenPos().y));
     }
@@ -1051,14 +1051,14 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
             bool hot = ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible;
             ImGui::EndDisabled();
             bool open = g_tab == t.id;
-            ImU32 col = !t.on ? IM_COL32(120, 120, 112, 255) : open ? cyan : hot ? ivory : IM_COL32(214, 210, 196, 210);
+            ImU32 col = !t.on ? IM_COL32(120, 120, 112, 255) : open ? jade : hot ? ivory : IM_COL32(214, 210, 196, 210);
             float isz = fs * 0.62f, cy = a.y + th * 0.5f;
             float content = isz * 2 + 18 * scale + ImGui::CalcTextSize(ups[i]).x, x0 = a.x + (tab_w[i] - content) * 0.5f;
             settings_icon(dl, t.id, ImVec2(x0 + isz, cy), isz, col, scale);
             dl->AddText(ImVec2(x0 + isz * 2 + 18 * scale, cy - fs * 0.5f), col, ups[i]);
             if (open)
                 dl->AddLine(ImVec2(a.x + 14 * scale, a.y + th - 2 * scale), ImVec2(a.x + tab_w[i] - 14 * scale, a.y + th - 2 * scale),
-                            cyan, 3.5f * scale);
+                            jade, 3.5f * scale);
             else if (hot)
                 dl->AddLine(ImVec2(a.x + 14 * scale, a.y + th - 2 * scale), ImVec2(a.x + tab_w[i] - 14 * scale, a.y + th - 2 * scale),
                             gold, 2 * scale);
@@ -1069,7 +1069,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
         ImVec2 q = ImGui::GetCursorScreenPos();  // (a line under the tabs, a diamond in the middle)
         float lw = ImGui::GetContentRegionAvail().x;
         wdl->AddLine(ImVec2(q.x, q.y), ImVec2(q.x + lw, q.y), gold_dim, 1.2f * scale);
-        ui_sheikah_diamond(wdl, ImVec2(q.x + lw * 0.5f, q.y), 5 * scale, gold, true);
+        ui_zonai_diamond(wdl, ImVec2(q.x + lw * 0.5f, q.y), 5 * scale, gold, true);
         ImGui::Dummy(ImVec2(lw, 10 * scale));
     }
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(18 * scale, 18 * scale));
@@ -1087,32 +1087,32 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     ImGui::EndChild();
     {   // BACK on the left; RESTORE DEFAULTS on the right on Video and Audio (asks first)
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8 * scale);
-        if (sheikah_button("Back", ImVec2(250 * scale, 62 * scale), 0, scale)) {
+        if (zonai_button("Back", ImVec2(250 * scale, 62 * scale), 0, scale)) {
             if (prelaunch) g_touch_settings_back = true;
             else set_open(false);
         }
         if (g_tab == 0 || g_tab == 1) {
             float rw = 380 * scale;
             ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - rw);
-            if (sheikah_button("Restore defaults", ImVec2(rw, 62 * scale), 1, scale)) ImGui::OpenPopup("##restore");
+            if (zonai_button("Restore defaults", ImVec2(rw, 62 * scale), 1, scale)) ImGui::OpenPopup("##restore");
         }
         ImGui::SetNextWindowPos(ImVec2(wp.x + ws.x * 0.5f, wp.y + ws.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-        ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.035f, 0.065f, 0.075f, 0.97f));
+        ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.035f, 0.075f, 0.055f, 0.97f));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(34 * scale, 26 * scale));
         if (ImGui::BeginPopupModal("##restore", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize)) {
             ImVec2 pp = ImGui::GetWindowPos(), ps = ImGui::GetWindowSize();
-            ui_sheikah_frame(ImGui::GetWindowDrawList(), ImVec2(pp.x + 2, pp.y + 2), ImVec2(pp.x + ps.x - 2, pp.y + ps.y - 2), gold,
+            ui_zonai_frame(ImGui::GetWindowDrawList(), ImVec2(pp.x + 2, pp.y + 2), ImVec2(pp.x + ps.x - 2, pp.y + ps.y - 2), gold,
                              12 * scale, 2 * scale);
             ImGui::TextUnformatted(tr("Restore the Video and Audio settings to their defaults?"));
             ImGui::TextDisabled("%s", tr("Saves, game files, mods, drivers and the controls stay as they are."));
             ImGui::Dummy(ImVec2(0, 10 * scale));
-            if (sheikah_button("Restore", ImVec2(260 * scale, 58 * scale), 1, scale)) {
+            if (zonai_button("Restore", ImVec2(260 * scale, 58 * scale), 1, scale)) {
                 settings_reset_defaults();
                 settings_save();
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
-            if (sheikah_button("Cancel", ImVec2(260 * scale, 58 * scale), 0, scale) ||
+            if (zonai_button("Cancel", ImVec2(260 * scale, 58 * scale), 0, scale) ||
                 ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
                 ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
@@ -1325,7 +1325,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
 #ifdef __ANDROID__
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.035f, 0.065f, 0.075f, 0.9f));  // (the Sheikah look: tabs_body)
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.035f, 0.075f, 0.055f, 0.9f));  // (the Zonai look: tabs_body)
 #endif
         ImGui::Begin("##menu", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
 #ifdef __ANDROID__
@@ -1336,7 +1336,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         ImGui::PushFont(g_menu_font);
         // header as on the start screen's Settings: the title, and a close X in the corner (B / Esc too). ("Title
         // screen" - rt_request_reboot(RT_REBOOT_TITLE) - is to find a new home; user 2026-10-11.) Android: the
-        // Sheikah frame's own title and BACK (tabs_body)
+        // Zonai frame's own title and BACK (tabs_body)
 #ifndef __ANDROID__
         ImGui::PushFont(g_font_big);
         ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Settings"));
