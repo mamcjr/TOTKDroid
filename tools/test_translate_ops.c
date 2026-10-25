@@ -39,6 +39,12 @@ static uint64_t hsetp2(int pa, int pb, int a, int b, int cmp, int p, bool pneg, 
            (uint64_t)cmp << 35 | (uint64_t)p << 39 | (uint64_t)pneg << 42 | (uint64_t)bop << 45 | (uint64_t)hand << 49;
 }
 
+// LDC Rd, c[bank][Ra + off] (32-bit)
+static uint64_t ldc(int d, int a, int bank, int off) {
+    return 0xef90000000000000ull | PT_GUARD | (uint64_t)d | (uint64_t)a << 8 | (uint64_t)(uint16_t)off << 20 |
+           (uint64_t)bank << 36 | 4ull << 48;
+}
+
 typedef struct {
     const char *name;
     uint64_t insn[6];  // 0-terminated
@@ -86,6 +92,10 @@ static const Case *cases(int *n) {
     CASE("HSETP2.GT.H_AND.OR PT (first)", "p0", 1, mov32i(1, 0x00003C00u), mov32i(2, 0), hsetp2(0, 1, 1, 2, GT, 7, false, OR, true));
     CASE("HSETP2.GT.H_AND.OR PT (second)", "p1", 0, mov32i(1, 0x00003C00u), mov32i(2, 0), hsetp2(0, 1, 1, 2, GT, 7, false, OR, true));
     CASE("HSETP2.LT.AND PT (per half)", "p1", 1, mov32i(1, 0xBC000000u), mov32i(2, 0), hsetp2(0, 1, 1, 2, LT, 7, false, AND, false));
+    // LDC: the immediate is signed (TOTK's skinning reads a bone matrix's first rows at -32 / -16 from its register);
+    // c3's words hold 0xC0000000 + their offset (the prelude)
+    CASE("LDC c[3][r1 - 16]", "r0", 0xC0000020u, mov32i(1, 0x30u), ldc(0, 1, 3, -16));
+    CASE("LDC c[3][r1 + 8]", "r0", 0xC0000018u, mov32i(1, 0x10u), ldc(0, 1, 3, 8));
 #undef CASE
     *n = k;
     return c;
@@ -105,6 +115,10 @@ static const char prelude[] =
     "static float2 hx(uint v, uint swz) { if (swz == 1u) { float f = as_type<float>(v); return {f, f}; }"
     " float2 h = {h2f(v & 0xFFFFu), h2f(v >> 16)}; return swz == 2u ? float2{h.x, h.x} : swz == 3u ? float2{h.y, h.y} : h; }\n"
     "static float2 operator-(float2 a) { return {-a.x, -a.y}; }\n"
+    "struct uint4 { uint v[4]; uint &operator[](uint i) { return v[i]; } };\n"
+    "static uint4 cb3[4096];\n"
+    "static uint cbr(uint4 *cb, uint off) { return off >> 4 < 4096u ? cb[off >> 4][(off >> 2) & 3] : 0xDEADu; }\n"
+    "static struct CbInit { CbInit() { for (uint i = 0; i < 4096 * 4; i++) cb3[i / 4][i % 4] = 0xC0000000u + i * 4; } } cb_init;\n"
     "static int fails;\n"
     "static void check(const char *name, uint got, uint want) {\n"
     "    if (got != want) { printf(\"FAIL %s: got 0x%08x, want 0x%08x\\n\", name, got, want); fails++; }\n"
