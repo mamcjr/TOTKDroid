@@ -25,6 +25,7 @@ typedef struct {
     uint8_t *in;               // the packet, with the padding FFmpeg reads past its end
     size_t in_cap;
     int errors;
+    FILE *raw;                 // LARECOMP_OPUS_RAW=<folder>: what it decoded, opus_<n>.raw (s16, its channels and rate)
 } OpusDec;
 
 // Work buffer sizes, after the console's own decoder state: Opus' SILK and CELT decoders per channel plus the frames
@@ -43,6 +44,7 @@ static void opus_close(Service *s) {
     av_packet_free(&d->pkt);
     av_frame_free(&d->frame);
     av_free(d->in);
+    if (d->raw) fclose(d->raw);
     free(d);
     s->state = NULL;
 }
@@ -54,9 +56,9 @@ static OpusDec *opus_open(uint32_t rate, uint32_t channels) {
     }
     OpusDec *d = calloc(1, sizeof *d);
     d->rate = (int)rate, d->channels = (int)channels, d->step = 48000 / (int)rate;
-    // (FFmpeg's Opus decoder needs libswresample, which android/deps/build_ffmpeg.sh leaves out - so it isn't in the
-    // app's libavcodec. Without it the decoder gives silence of the packets' length: a failed open made TOTK abort
-    // when its title screen opened one.)
+    // (FFmpeg's Opus decoder needs libswresample: android/deps/build_ffmpeg.sh's FFmpeg has both, LASRecompAndroid's
+    // in android/deps/out neither. Without it the decoder gives silence of the packets' length: a failed open made
+    // TOTK abort when its title screen opened one.)
     const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_OPUS);
     d->ctx = codec ? avcodec_alloc_context3(codec) : NULL;
     if (!d->ctx) {
@@ -74,6 +76,14 @@ static OpusDec *opus_open(uint32_t rate, uint32_t channels) {
     }
     d->pkt = av_packet_alloc();
     d->frame = av_frame_alloc();
+    static int opened;
+    const char *dir = getenv("LARECOMP_OPUS_RAW");
+    if (dir) {
+        char path[512];
+        snprintf(path, sizeof path, "%s/opus_%d.raw", dir, opened);
+        d->raw = fopen(path, "wb");
+    }
+    opened++;
     return d;
 }
 
@@ -140,6 +150,15 @@ static uint32_t opus_decode(OpusDec *d, const uint8_t *in, uint64_t in_size, int
         }
     av_frame_unref(f);
     *samples = (uint32_t)n;
+    if (d->raw) fwrite(out, 2, (size_t)n * ch, d->raw);
+    // LARECOMP_LOG_OPUS=1: every 200th packet decoded, with its loudest sample (sound or silence, without listening)
+    static int log_opus = -1, decoded;
+    if (log_opus < 0) log_opus = getenv("LARECOMP_LOG_OPUS") != NULL;
+    if (log_opus && decoded++ % 200 == 0) {
+        int peak = 0;
+        for (int i = 0; i < n * ch; i++) peak = abs(out[i]) > peak ? abs(out[i]) : peak;
+        LOG("[hwopus] packet %d: %u bytes -> %d samples x%d at %d Hz, peak %d\n", decoded, size, n, ch, d->rate, peak);
+    }
     return 0;
 }
 

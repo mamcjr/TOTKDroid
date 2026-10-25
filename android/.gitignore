@@ -7,5 +7,6 @@ local.properties
 deps/src/
 deps/work/
 deps/out/
+deps/ffmpeg/
 *.log
 out/

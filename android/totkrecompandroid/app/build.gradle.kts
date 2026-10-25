@@ -7,6 +7,9 @@ plugins {
 
 val repo: File = rootDir.resolve("../..").canonicalFile
 val deps: File = repo.resolve("android/deps/out")  // android/deps/build_deps.sh
+// FFmpeg: android/deps/build_ffmpeg.sh's (with the Opus decoder) when it's built, else android/deps/out's (as the CMake build)
+val ffmpeg: File = repo.resolve("android/deps/ffmpeg").let { if (it.resolve("lib/libswresample.so").exists()) it else deps }
+fun depLib(name: String): File = (if (name.startsWith("libav") || name.startsWith("libsw")) ffmpeg else deps).resolve("lib/$name")
 val gen = layout.buildDirectory.dir("generated/totkrecompandroid")
 // The release key: outside the repository, in ~/.totkrecompandroid/keystore.properties (storeFile, storePassword, keyAlias,
 // keyPassword); without it, release builds are signed with the debug key
@@ -58,7 +61,7 @@ android {
         jniLibs {
             useLegacyPackaging = true  // adrenotools loads its hooks from nativeLibraryDir
             pickFirsts += listOf("**/libSDL3.so", "**/libshaderc_shared.so", "**/libavcodec.so", "**/libavformat.so",
-                                 "**/libavutil.so", "**/libswscale.so")
+                                 "**/libavutil.so", "**/libswscale.so", "**/libswresample.so")
         }
     }
 
@@ -93,9 +96,10 @@ val prepareTotkRecompAndroid by tasks.registering {
     val icon = repo.resolve("assets/artwork/totk-zonai-icon-v1.png")
     val background = repo.resolve("assets/artwork/hyrule-sky-islands-background-v1.png")
     val touchSkin = repo.resolve("assets/artwork/zonai-touch-atlas-v1.png")
-    val libs = listOf("libSDL3.so", "libshaderc_shared.so", "libavcodec.so", "libavformat.so", "libavutil.so", "libswscale.so")
+    val libs = listOf("libSDL3.so", "libshaderc_shared.so", "libavcodec.so", "libavformat.so", "libavutil.so", "libswscale.so",
+                      "libswresample.so")  // (libavcodec's Opus decoder needs libswresample)
     inputs.files(smaa, font, icon, background, touchSkin)
-    inputs.files(libs.map { deps.resolve("lib/$it") }.filter { it.exists() })
+    inputs.files(libs.map { depLib(it) }.filter { it.exists() })
     if (deps.resolve("gen").exists()) inputs.dir(deps.resolve("gen"))  // (the game code's builder, below)
     inputs.files(listOf("tools/gen.py", "tools/lifter.py", "tools/analyze.py", "tools/nso.py", "tools/passes.py", "tools/patches.py",
                         "tools/simd_c.py", "tools/gamelib_entry.c", "runtime/cpu.h",
@@ -112,7 +116,7 @@ val prepareTotkRecompAndroid by tasks.registering {
         out.resolve("inc").mkdirs()
         out.resolve("inc/smaa_hlsl.inc").writeText(inc)
         for (lib in libs)  // (FFmpeg's only once android/deps/build_ffmpeg.sh made them)
-            if (deps.resolve("lib/$lib").exists()) deps.resolve("lib/$lib").copyTo(out.resolve("jniLibs/arm64-v8a/$lib"), overwrite = true)
+            if (depLib(lib).exists()) depLib(lib).copyTo(out.resolve("jniLibs/arm64-v8a/$lib"), overwrite = true)
         font.copyTo(out.resolve("assets/res/Baloo2-SemiBold.ttf"), overwrite = true)
         deps.resolve("fonts/DejaVuSans.ttf").copyTo(out.resolve("assets/res/DejaVuSans.ttf"), overwrite = true)
         icon.copyTo(out.resolve("assets/res/icon.png"), overwrite = true)

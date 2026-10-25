@@ -1,14 +1,18 @@
 #!/bin/bash
-# android/deps/build_ffmpeg.sh: FFmpeg for Android arm64 into android/deps/out (the movie player, runtime/hle/movie.c,
-# and the start screen's background frame) - an LGPL-only configuration: only what the
-# game's movies need. FFmpeg's configure wants a Unix shell: on Windows run it in WSL
+# android/deps/build_ffmpeg.sh: FFmpeg for Android arm64 into android/deps/ffmpeg (the movie player, runtime/hle/movie.c,
+# the start screen's background frame and the characters' voices, runtime/services/hwopus.c) - an LGPL-only
+# configuration: only what the game's movies and voices need (libswresample too: FFmpeg's Opus decoder resamples its
+# SILK frames with it, and isn't built without it - the voices were silent). Its own folder, not android/deps/out:
+# that one can be LASRecompAndroid's (a junction), whose apps don't carry libswresample - a libavcodec needing it there
+# would stop them loading. The app's build takes FFmpeg from here when it's built, else from android/deps/out (no
+# voices). FFmpeg's configure wants a Unix shell: on Windows run it in WSL
 #   wsl -d Ubuntu-26.04 -- bash android/deps/build_ffmpeg.sh
 # It uses the Linux NDK (the same version as the app; downloaded to ~/android-ndk-r30 when missing) and builds in
 # ~/totkrecompandroid-ffmpeg (the Linux file system: much faster than /mnt). Shared libraries without version suffixes
 # (libavcodec.so, not .so.62): the names an APK can carry.
 set -euo pipefail
 cd "$(dirname "$0")"
-P=$PWD/out
+P=$PWD/ffmpeg
 NDK=${ANDROID_NDK_LINUX:-$HOME/android-ndk-r30}
 W=$HOME/totkrecompandroid-ffmpeg
 API=30
@@ -49,7 +53,7 @@ cd "$W/ffmpeg"
     --nm="$TC/llvm-nm" --ar="$TC/llvm-ar" --ranlib="$TC/llvm-ranlib" --strip="$TC/llvm-strip" \
     --enable-shared --disable-static --enable-pic \
     --disable-autodetect --disable-programs --disable-doc --disable-network --disable-avdevice --disable-avfilter \
-    --disable-swresample --disable-everything \
+    --disable-everything \
     --enable-protocol=file --enable-demuxer=matroska,mov \
     --enable-decoder=vp9,vp8,vorbis,opus,h264,aac --enable-parser=vp9,vp8,vorbis,opus,h264,aac
 # unversioned shared library names (Android loads what the APK ships by exact file name)
@@ -58,8 +62,9 @@ sed -i -e 's/^SLIBNAME_WITH_MAJOR=.*/SLIBNAME_WITH_MAJOR=$(SLIBNAME)/' -e 's/^SL
 make -j"$(nproc)"
 make install
 
-for l in avcodec avformat avutil swscale; do cp "$W/prefix/lib/lib$l.so" "$P/lib/"; done
-rm -rf "$P/include/libavcodec" "$P/include/libavformat" "$P/include/libavutil" "$P/include/libswscale"
+for l in avcodec avformat avutil swscale swresample; do cp "$W/prefix/lib/lib$l.so" "$P/lib/"; done
+rm -rf "$P/include/libavcodec" "$P/include/libavformat" "$P/include/libavutil" "$P/include/libswscale" \
+       "$P/include/libswresample"
 cp -r "$W/prefix/include/"* "$P/include/"
 echo "ffmpeg: $P"
-ls -la "$P"/lib/libav*.so "$P"/lib/libswscale.so
+ls -la "$P"/lib/libav*.so "$P"/lib/libswscale.so "$P"/lib/libswresample.so

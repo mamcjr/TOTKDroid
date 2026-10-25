@@ -26,13 +26,18 @@ set_target_properties(shaderc_shared PROPERTIES IMPORTED_LOCATION ${DEPS}/lib/li
 
 file(GLOB RT_SRC CONFIGURE_DEPENDS ${R}/runtime/*.c ${R}/runtime/hle/*.c ${R}/runtime/services/*.c ${R}/runtime/nvn/*.c
      ${R}/runtime/nvn/maxwell/*.c)
-# FFmpeg (android/deps/build_ffmpeg.sh): the game's movies and the start screen's background; without it, neither
+# FFmpeg (android/deps/build_ffmpeg.sh): the game's movies and the start screen's background; without it, neither.
+# android/deps/ffmpeg's when it's built (with the Opus decoder: the voices), else android/deps/out's (LASRecompAndroid's)
+set(FFMPEG ${R}/android/deps/ffmpeg)
+if(NOT EXISTS ${FFMPEG}/lib/libswresample.so)
+    set(FFMPEG ${DEPS})
+endif()
 set(HAVE_FFMPEG FALSE)
-if(EXISTS ${DEPS}/lib/libavformat.so)
+if(EXISTS ${FFMPEG}/lib/libavformat.so)
     set(HAVE_FFMPEG TRUE)
     foreach(l avcodec avformat avutil swscale)
         add_library(${l} SHARED IMPORTED)
-        set_target_properties(${l} PROPERTIES IMPORTED_LOCATION ${DEPS}/lib/lib${l}.so)
+        set_target_properties(${l} PROPERTIES IMPORTED_LOCATION ${FFMPEG}/lib/lib${l}.so)
     endforeach()
 else()
     list(REMOVE_ITEM RT_SRC ${R}/runtime/hle/movie.c)
@@ -50,7 +55,7 @@ set_source_files_properties(${UI_SRC} PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-
 set_source_files_properties(${R}/runtime/gamelib.c PROPERTIES COMPILE_DEFINITIONS "GAMELIB_ID=\"${GAMELIB_ID}\"")
 set_source_files_properties(${R}/runtime/gamebuild.c PROPERTIES COMPILE_DEFINITIONS "GAMELIB_ID=\"${GAMELIB_ID}\"")
 
-target_include_directories(main PRIVATE ${R}/runtime ${R}/runtime/nvn ${IMGUI} ${IMGUI}/backends ${DEPS}/include
+target_include_directories(main PRIVATE ${R}/runtime ${R}/runtime/nvn ${IMGUI} ${IMGUI}/backends ${FFMPEG}/include ${DEPS}/include
                            ${DEPS}/volk ${TOTK_GEN_DIR} ${R}/third_party/smaa/Textures ${R}/android/common)
 target_compile_definitions(main PRIVATE
     VK_NO_PROTOTYPES VK_USE_PLATFORM_ANDROID_KHR IMGUI_IMPL_VULKAN_USE_VOLK   # Vulkan from the loaded driver (volk)
