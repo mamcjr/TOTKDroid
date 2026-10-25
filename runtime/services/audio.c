@@ -791,7 +791,7 @@ static void update_voice(Renderer *r, Voice *v, const uint8_t *p, uint8_t *out, 
                     (long)(v - r->voice), i, v->fmt, v->rate, v->chans, v->pitch, v->volume, v->mix_id, v->chan_ids[0],
                     (unsigned long long)wb->addr, (unsigned long long)wb->size, wb->start, wb->end, wb->loop,
                     wb->loop_count, wb->eos, (unsigned long long)wb->ctx, (unsigned long long)v->ds_addr);
-            if (vlog && v->ds_addr) {
+            if (vlog && v->ds_addr && in_guest(v->ds_addr, 38)) {  // (a garbage voice's address is no place to read)
                 const int16_t *k = (const int16_t *)(uintptr_t)v->ds_addr;
                 LOG("[audren]   coefs v%ld:", (long)(v - r->voice));
                 for (int j = 0; j < 19; j++) LOG(" %d", k[j]);
