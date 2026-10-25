@@ -74,6 +74,7 @@ public class TOTKRecompAndroidActivity extends SDLActivity {
     private static native void nativeImportDone(int result);
     private static native void nativeImportDetail(String what);  // (a failure's cause, shown under it)
     private native String nativeBuildRomfs(String[] paths, long[] sizes);
+    private static native boolean nativeCheckRomfs(int version, String[] paths, String versionTxt);
     private static native void nativeDriverPicked(String name);
     private static native void nativeModImportDone(String message);
     private static native void nativeLogFolderPicked(String name);
@@ -592,6 +593,13 @@ public class TOTKRecompAndroidActivity extends SDLActivity {
             romfsFiles.clear();
             romfsPaths.clear();
             listFiles(tree, romfs, "");
+            int vt = romfsPaths.indexOf("System/Version.txt");  // (its version against the exefs/'s, and its file count)
+            if (!nativeCheckRomfs(version, romfsPaths.toArray(new String[0]), vt >= 0 ? readText(tree, romfsFiles.get(vt)) : "")) {
+                romfsFiles.clear();
+                romfsPaths.clear();
+                nativeImportDone(6);
+                return;
+            }
             long romfsBytes = 0;
             for (Doc d : romfsFiles) romfsBytes = Math.addExact(romfsBytes, d.size);
             String name = DocumentsContract.getTreeDocumentId(tree);
