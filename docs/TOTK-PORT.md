@@ -51,6 +51,44 @@ hactoolnet --titlekeys title.keys -t nca <NCA do programa da atualização> --ba
   em `Sound/Resource/*.bars.zs`; 28 vídeos WebM (1,5 GB) em `Event/Movie/` - os únicos arquivos que o runtime abre pelo
   caminho (`hle/movie.c`; o `keep_loose` do launcher já os separa pelo `.webm`).
 
+## 1.4.3 e o MacNativeGames (2026-10-25)
+
+O [MacNativeGames](https://github.com/ly05010419/MacNativeGames) roda o TOTK 1.0.0, 1.2.1 e **1.4.3** nativo no Mac,
+iPhone e iPad (o código ARM64 do jogo direto no chip da Apple, NVN em Metal pelo tradutor do Ryujinx) e documenta o
+que achou (`docs/how-it-works.md`, `docs/v1.4.3-port.md`, `games/totk/runtime/game_patches_v143.c`). Por isso o porte
+passa para a **1.4.3**: os endereços e as instruções originais dos patches dele valem aqui.
+
+- **O dump:** atualização `0100F2C0115B6800` **v720896** (`Updates_Switch/`). `tools/nsp_extract.py` desempacota os
+  NSPs e tira as title keys dos tickets (só o NCA de programa do jogo base, 17 GB, com `--only-largest`); depois o mesmo
+  `hactoolnet ... --basenca ... --exefsdir Dump/v143/exefs --romfs Dump/v143/romfs.bin`. Os SHA-256 do ExeFS e do
+  RomFS (17.052.625.232 bytes, `797e66f2...`) são **os mesmos** que o MacNativeGames publica
+  (`games/totk/assets/expected-v1.4.3.json`).
+- **Tudo mudou de 1.4.2 para 1.4.3:** `main` (build `277178b7dba1b6d4`, +0x13A10 de texto, compilador novo), e também
+  `sdk`, `subsdk0`, `rtld` e o npdm: **SDK 20.5.22** (era o 20.5.6 do BOTW 1.8.2), +27 símbolos no `sdk`. Os 24 sítios
+  de patch do MacNativeGames para 1.4.3 batem um a um com o nosso `main`; no 1.4.2 nenhum estava no mesmo endereço
+  (o compilador mudou: alguns grupos aparecem deslocados, outros não).
+- **Código:** `gen.py` sem mudança (`sdk`: 40.516 funções, 1 instrução sem suporte - dados lidos como código, como
+  antes; `main`: 228.238 funções, 0 sem suporte, 2 min). `GAMELIB_GEN=generated-android-dyn-143
+  GAMELIB_OUT=android/out/v143 bash android/build_gamelib.sh <caminho absoluto>/Dump/v143/exefs`.
+- **Patches** (`tools/patches.py`, cada palavra original conferida antes):
+  - `main+0x5848a8` (`mov w9, w23`): a escala do controlador de resolução dinâmica (`main+0x584300`) fica em 100 %
+    (`rt_dynres_scale`; `LARECOMP_DYNRES=1` devolve a do jogo). Cada troca de tamanho do G-buffer (1600x896,
+    1432x808, 1280x720) dava um quadro sem o mundo (abaixo, "piscadas").
+  - `main+0x2daa54..78` e `0x3e5658`: o passo do mundo (o FrameRateMgr o tira dos 30 fps nominais) passa a ser o tempo
+    medido entre os presents (a média dos últimos 5, entre 1/120 e 1/15 s: `rt_frame_ratio30`,
+    `rt_frame_interval60`). Um celular a 22 fps não roda mais em câmera lenta. `LARECOMP_REALTIME=0`: o valor nominal,
+    bit a bit.
+  - Ainda não trazidos: 60 fps (7 sítios), o relógio de pano / cabelo a fps altos (4), o pulo em câmera lenta a fps
+    altos, widescreen / ultrawide (4 + Vert+), a resolução de saída e a de renderização (`TOTK_RENDER_RES`: uma opção
+    de qualidade / desempenho para celulares).
+- **Do que eles acharam, independente de versão (já aqui):** o early-Z do NVN (byte `+0x718` da seção de controle de
+  0x880 bytes: `layout(early_fragment_tests)`), a altura de bloco do NVN (trunca `altura x 1,5 / 8`; o deko3d
+  arredonda para cima), o contador de visibilidade (um vertex shader com ballot: aqui cada vértice que passa conta a si
+  mesmo, como a redução deles) e as máscaras de lane do `S2R`.
+- **Ainda a ver deles:** os clears de D16 nas classificações das habilidades (Ultrahand / Recall: quadrados
+  coloridos), decalques que leem o G-buffer em que se misturam (num tiler), `MatchSwitchDepthSampling`, a memória do
+  pool de aplicação (3.285 MiB) e a lista de shaders compartilhada.
+
 ## Diferenças em relação ao BOTW
 
 | # | Diferença | Onde | Gravidade |
@@ -236,6 +274,17 @@ Falta:
   quadro), `LARECOMP_LOG_DRAWS=1` (cada draw do quadro despejado: shaders, formato / deslocamento / stride de cada
   atributo, tamanho de cada cbuf do vertex shader) e `LARECOMP_DEBUG_SWEEP=<fs hash>` + `LARECOMP_DEBUG_FRAMES=<n>`
   (o passe que começa por esse shader, um quadro sem cada um dos seus draws: qual draw estraga a imagem).
+- **As piscadas - a causa (2026-10-25).** Quadros escuros (a cena 3D preta, só partículas e HUD) logo depois de cada
+  troca de tamanho da resolução dinâmica (1600x896 / 1432x808 / 1280x720): 7 em 20 s de vídeo. No quadro da troca
+  (`LARECOMP_DEBUG_SCENE_CHANGE`) o passe do cenário no G-buffer (`be4508`, ~97 draws) e os seguintes **não existem**:
+  o jogo nem os pede (não são indiretos - `DrawIndirect` e `MultiDraw*IndirectCount` seguem não feitos, e o TOTK não
+  os usa aqui; nenhuma leitura de textura de volta para a CPU). Cada tamanho tem seus objetos de textura no mesmo
+  endereço, e aqui cada um é uma imagem Vulkan separada (no Switch, a mesma memória). Contornos medidos:
+  `LARECOMP_FAST_COUNTERS=2` (os contadores de tempo de GPU do jogo limitados a 8 ms: o controlador fica em 100 %) tira
+  as trocas e os quadros escuros (0 em 20 s) - mas o jogo passa a mirar 30 fps e roda a ~25, então o passo nominal
+  dá câmera lenta. Na 1.4.3 os patches de resolução fixa e de passo em tempo real (acima) resolvem os dois.
+- **Desempenho medido na caverna:** com o early-Z do NVN e a altura de bloco do NVN, o log mostrou 30,0 fps estáveis
+  em trechos onde antes eram 20 (a captura de tela no mesmo teste ainda pegou 20: inconclusivo).
 - **As vozes - resolvido (2026-10-25).** Eram duas coisas:
   - **Opus:** o FFmpeg do app não tinha o decodificador (ele precisa do `libswresample`, que o
     `android/deps/build_ffmpeg.sh` deixava de fora) e o `hwopus` devolvia silêncio. Agora o script compila o FFmpeg
