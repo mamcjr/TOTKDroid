@@ -40,6 +40,7 @@ bool rt_resource(const char *name, const char *dev_rel, char *out, size_t n);
 
 // Game versions, from main's build id (its NSO header's bytes 0x40-0x47: runtime/loader.c; 0 = not one this app runs)
 #define GAME_V_142 142          // Tears of the Kingdom 1.4.2 (the update v655360, SDK 20.5.6)
+#define GAME_V_143 143          // Tears of the Kingdom 1.4.3 (the update v720896, SDK 20.5.22; MacNativeGames' version)
 #define GAME_V_MAIN GAME_V_142  // the one in the data root itself
 int game_version_of_build(const uint8_t id[8]);
 const char *game_version_name(int v);                     // "1.4.2"; "?" for one this app doesn't run

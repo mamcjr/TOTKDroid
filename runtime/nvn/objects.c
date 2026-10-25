@@ -1,4 +1,5 @@
 // NVN objects, builders, and state objects (everything except command recording).
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -1332,6 +1333,50 @@ int64_t rt_frame_ticks(int64_t ticks) {
     return ticks > cap ? cap : ticks;
 }
 
+// TOTK 1.4.3 (tools/patches.py, after MacNativeGames' real-time frame step): the world's step is the measured time
+// between the game's presents - the mean of the last 5, kept within 1/120..1/15 s - instead of the nominal 1/30 s a
+// frame: a phone that renders 22 fps plays at full speed, not in slow motion. LARECOMP_REALTIME=0: the nominal values,
+// as the original computes them.
+static _Atomic uint32_t frame_step_bits;  // (seconds, as a float; 0: none measured yet)
+static int realtime_on(void) {
+    static int on = -1;
+    if (on < 0) on = !getenv("LARECOMP_REALTIME") || atoi(getenv("LARECOMP_REALTIME"));
+    return on;
+}
+static void frame_step_update(uint64_t now_ns) {
+    static uint64_t last;
+    static double samples[5];
+    static unsigned n, next;
+    double dt = last ? (double)(now_ns - last) * 1e-9 : 0;
+    last = now_ns;
+    if (dt > 0.25 || dt < 0.001) { n = next = 0; return; }  // (a load, a pause: start over)
+    if (dt < 1.0 / 120) dt = 1.0 / 120;
+    if (dt > 1.0 / 15) dt = 1.0 / 15;
+    samples[next++ % 5] = dt;
+    if (n < 5) n++;
+    double sum = 0;
+    for (unsigned i = 0; i < n; i++) sum += samples[i];
+    float f = (float)(sum / n);
+    uint32_t b;
+    memcpy(&b, &f, 4);
+    atomic_store_explicit(&frame_step_bits, b, memory_order_relaxed);
+}
+static float frame_step(float nominal_s) {
+    uint32_t b = atomic_load_explicit(&frame_step_bits, memory_order_relaxed);
+    float f;
+    memcpy(&f, &b, 4);
+    return realtime_on() && b ? f : nominal_s;
+}
+float rt_frame_ratio30(float nominal) { return frame_step(nominal / 30.0f) * 30.0f; }       // the step / (1/30 s)
+float rt_frame_interval60(float nominal) { return frame_step(nominal / 60.0f) * 60.0f; }    // the step in 60 Hz vsyncs
+// The dynamic resolution controller's scale (a float's bits, its tier): held at 100 % - each step of its tiers gave a
+// frame without the world (tools/patches.py). LARECOMP_DYNRES=1: the game's own.
+uint32_t rt_dynres_scale(uint32_t game) {
+    static int dyn = -1;
+    if (dyn < 0) dyn = getenv("LARECOMP_DYNRES") && atoi(getenv("LARECOMP_DYNRES"));
+    return dyn ? game : 0x3f800000u;
+}
+
 #ifdef __ANDROID__
 int g_present_interval = 1;  // the game's latest (1: 60 fps, 2: 30 fps): the frame pacer (vulkan/exec.c)
 NVN(nvnWindowSetPresentInterval) {
@@ -1399,6 +1444,7 @@ NVN(nvnQueuePresentTexture) {
             last_vs = __atomic_load_n(&g_vsync_count, __ATOMIC_RELAXED);
         }
     }
+    frame_step_update(plat_now_ns());  // (TOTK 1.4.3's world step: the time between presents)
     if (i >= 0 && i < w->num) backend_present(HOST(NvnTexture, w->textures[i]));
 }
 
