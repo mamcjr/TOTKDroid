@@ -1812,7 +1812,22 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         case 0x25: set_reg(c, d, "ctaid.x"); break;
         case 0x26: set_reg(c, d, "ctaid.y"); break;
         case 0x27: set_reg(c, d, "ctaid.z"); break;
-        case 0x00: set_reg(c, d, "0u"); break;
+        // The lane id and lane masks, as VOTE's ballot sees the warp: where it has lanes (Vulkan fragment and compute
+        // shaders), each 32 lanes of the subgroup are one (Adreno's is 64 or 128 wide); elsewhere one lane by itself -
+        // lane 0, its own bit (the masks were 0: a leader picked by ballot & EQMASK never counted)
+        case 0x00: case 0x38: case 0x39: case 0x3a: case 0x3b: case 0x3c: {
+            bool lanes = c->glsl && c->stage != STAGE_VERTEX;
+            static const char *const one[] = {"0u", "1u", "0u", "1u", "0xFFFFFFFEu", "0xFFFFFFFFu"};
+            static const char *const many[] = {"(gl_SubgroupInvocationID & 31u)", "(1u << (gl_SubgroupInvocationID & 31u))",
+                                               "((1u << (gl_SubgroupInvocationID & 31u)) - 1u)",
+                                               "((2u << (gl_SubgroupInvocationID & 31u)) - 1u)",
+                                               "~((2u << (gl_SubgroupInvocationID & 31u)) - 1u)",
+                                               "~((1u << (gl_SubgroupInvocationID & 31u)) - 1u)"};
+            int k = sr == 0 ? 0 : sr - 0x37;
+            if (lanes) c->uses_vote = true;
+            set_reg(c, d, lanes ? many[k] : one[k]);
+            break;
+        }
         default: sprintf(t, "0u /* sr %#x */", sr); set_reg(c, d, t);
         }
     } else if (OPM(0x5c30000000000000ull, 0xfff8000000000000ull) || OPM(0x4c30000000000000ull, 0xfff8000000000000ull) ||
@@ -2064,7 +2079,9 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
     } else if (OPM(0x50d8000000000000ull, 0xfff8000000000000ull)) {  // VOTE
         // VOTE.ALL / ANY / EQ pb, rd, pa: pb whether the lanes' pa agree that way, rd the ballot of pa (TOTK's
         // fragment shaders). The subgroup is the warp here; on a GPU whose subgroup is wider (Adreno: 64 or 128)
-        // the ballot keeps its first 32 lanes. Vertex shaders and the MSL path: one lane by itself.
+        // each 32 lanes are one: the ballot is its own 32 lanes' word (S2R's lane id and masks agree). Vertex shaders
+        // and the MSL path: one lane by itself (TOTK's visibility counter: each passing vertex counts itself, the
+        // reduction MacNativeGames lowers it to).
         int pa = (int)bits(w, 39, 3), pb = (int)bits(w, 45, 3), mode = (int)bits(w, 48, 2);
         bool lanes = c->glsl && c->stage != STAGE_VERTEX;
         static const char *const fn[] = {"subgroupAll", "subgroupAny", "subgroupAllEqual", "subgroupAll"};
@@ -2072,7 +2089,7 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         sp(&c->body, "    { bool vp_ = %s;\n", P(pa, bits(w, 42, 1)));
         if (d != RZ) {
             c->reg_used[d] = 1;
-            sp(&c->body, lanes ? "      r%d = subgroupBallot(vp_).x;\n" : "      r%d = vp_ ? 1u : 0u;\n", d);
+            sp(&c->body, lanes ? "      r%d = subgroupBallot(vp_)[gl_SubgroupInvocationID >> 5];\n" : "      r%d = vp_ ? 1u : 0u;\n", d);
         }
         if (pb != PT) {
             c->pred_used[pb] = 1;
