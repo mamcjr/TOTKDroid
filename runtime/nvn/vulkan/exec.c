@@ -1633,6 +1633,9 @@ static void vk_end_pass_at(int line) {
         // (LARECOMP_DEBUG_DIR=<folder>: there instead of build/ - Android: the app's internal files, which run-as reads;
         // its external folder is out of the shell's reach)
         const char *dir = getenv("LARECOMP_DEBUG_DIR") ? getenv("LARECOMP_DEBUG_DIR") : "build";
+        extern int vk_debug_sweep_pass(void);
+        int only = vk_debug_sweep_pass();  // (a draw sweep: only its pass)
+        if (only != -2 && debug_pass_no != only) { debug_pass_no++; pass_dump_b = NULL; return; }
         if (multi) snprintf(path, sizeof path, "%s/pass_%llu_%03d.png", dir, (unsigned long long)debug_pass_frame, debug_pass_no++);
         else snprintf(path, sizeof path, "%s/pass_%03d.png", dir, debug_pass_no++);
         TexBackend *b = pass_dump_b;
@@ -5072,6 +5075,18 @@ static bool topology(uint32_t mode, VkPrimitiveTopology *t, uint8_t *cls) {
 }
 
 static void draw_(CmdRec *r, bool indexed);
+
+// LARECOMP_DEBUG_SWEEP=<fs hash> (with LARECOMP_DEBUG_FRAMES=<n>): which draw of a pass breaks it - the pass whose
+// first draw is that fragment shader's (its number changes from frame to frame). The n debug frames dump that pass
+// alone, the first whole, then each without one of its draws in turn (draw f - 1 in frame f, "[sweep]").
+static uint64_t sweep_want(void) {
+    static int init;
+    static uint64_t h;
+    if (!init) init = 1, h = getenv("LARECOMP_DEBUG_SWEEP") ? strtoull(getenv("LARECOMP_DEBUG_SWEEP"), NULL, 16) : 0;
+    return h;
+}
+static int sweep_pass = -1;  // (that pass's number in this debug frame)
+int vk_debug_sweep_pass(void) { return sweep_want() ? sweep_pass : -2; }
 static void draw(CmdRec *r, bool indexed) {
     PROF_T0();
     draw_(r, indexed);
@@ -5811,6 +5826,43 @@ static void draw_(CmdRec *r, bool indexed) {
     }
 
     if (prof) prof_vtx += SDL_GetTicksNS() - prof_t2_;
+    if (g_debug_frame) {  // LARECOMP_LOG_DRAWS=1: the debug frame's draws - shaders, vertex layout, the vertex stage's cbufs
+        static int on = -1;
+        if (on < 0) on = getenv("LARECOMP_LOG_DRAWS") != NULL;
+        if (on) {
+            char b[1024];
+            int n = snprintf(b, sizeof b, "[draw] pass %d fs %016llx vs %llx %s %u inst %u bv %d |", debug_pass_no,
+                             (unsigned long long)g_cur_fs_hash, (unsigned long long)pr->code[0], use_index ? "idx" : "n",
+                             use_index ? icount : count, inst, base_vertex);
+            for (int i = 0; i < 32 && n < (int)sizeof b - 40; i++)
+                if (pp->k.attr_mask >> i & 1) {
+                    uint32_t a = i < st.nattrib ? st.attrib[i] : 0;
+                    int sb = pp->k.attr_bind[i];
+                    n += snprintf(b + n, sizeof b - n, " a%d:%02x@s%d+%u/%u", i, a & 0xFF, sb, a >> 13,
+                                  sb < 16 ? pp->k.stride[sb] : 0);
+                }
+            n += snprintf(b + n, sizeof b - n, " | vs cb");
+            for (int k = 0; k < 18 && n < (int)sizeof b - 24; k++)
+                if (st.ubuf[0][k].size) n += snprintf(b + n, sizeof b - n, " %d:%llu", k, (unsigned long long)st.ubuf[0][k].size);
+            LOG("%s\n", b);
+        }
+    }
+    if (g_debug_frame && sweep_want()) {  // LARECOMP_DEBUG_SWEEP: this frame's draw of the pass left out
+        static uint64_t first = ~0ull, frame = ~0ull;
+        static int last_pass = -1, n;
+        uint64_t f = renderer_present_count();
+        if (first == ~0ull) first = f;
+        if (frame != f) frame = f, sweep_pass = last_pass = -1;
+        if (debug_pass_no != last_pass) {
+            last_pass = debug_pass_no, n = 0;
+            if (sweep_pass < 0 && g_cur_fs_hash == sweep_want()) sweep_pass = debug_pass_no;
+        }
+        if (sweep_pass == debug_pass_no && (uint64_t)n++ + 1 == f - first) {
+            LOG("[sweep] frame %llu: draw %d of pass %d left out (fs %016llx vs %llx, %u)\n", (unsigned long long)f, n - 1,
+                debug_pass_no, (unsigned long long)g_cur_fs_hash, (unsigned long long)pr->code[0], use_index ? icount : count);
+            return;
+        }
+    }
     // ---- draw
     if (!use_index) vkCmdDraw(cb, count, inst, first, base_inst);
     else vkCmdDrawIndexed(cb, icount, inst, 0, base_vertex, base_inst);

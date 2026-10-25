@@ -223,8 +223,19 @@ Falta:
 - Também nesta rodada: `ReadTexels` / `WriteTexels` (com e sem stride) de qualquer região, nível e camada
   (`tegra_copy_region`), e as instruções de ponto flutuante duplo (`DADD`, `DMUL`, `DFMA`, `DMNMX`, `DSETP`, F64 em
   `F2F` / `F2I` / `I2F`) emuladas em fp32 - o Adreno não tem `shaderFloat64`.
-- Vistos depois disso (a investigar): as **vozes** dos personagens mudas (resolvido, abaixo), o **corpo do Link se
-  deformando** e **piscadas** na imagem.
+- Vistos depois disso (a investigar): as **vozes** dos personagens mudas e o **corpo do Link se deformando**
+  (resolvidos, abaixo) e **piscadas** na imagem.
+- **O corpo deformado - resolvido (2026-10-25).** Não eram os ossos: o tronco, os braços e a cabeça do Link e quase
+  toda a Zelda viravam "varetas" esticadas para um mesmo ponto, e no G-buffer o Link só tinha pernas e espada. O
+  skinning de 4 ossos do TOTK (VS `247c7c700`) guarda o endereço da matriz de um osso + 32 e lê as duas primeiras
+  linhas em -32 / -16: `LDC c[5][r + 0xFFE0]`. O deslocamento do `LDC` é **com sinal** (s16; Ryujinx `Imm16ToSInt`,
+  yuzu `BitField<20, 16, s64>`) e o tradutor o lia sem sinal: o endereço passava 64 KB, o `cbr` o limitava ao último
+  vec4 e duas das quatro matrizes saíam lixo. Índices, pesos e paletas conferidos nos dumps (todos dentro, nenhuma
+  matriz zerada). `tools/test_translate_ops.sh`: 31 casos (2 de `LDC`), 0 falhas.
+  Ferramentas que ficaram: `<LARECOMP_DEBUG_DIR>/dump_now` (criado pelo adb: o F9 no celular, despeja o próximo
+  quadro), `LARECOMP_LOG_DRAWS=1` (cada draw do quadro despejado: shaders, formato / deslocamento / stride de cada
+  atributo, tamanho de cada cbuf do vertex shader) e `LARECOMP_DEBUG_SWEEP=<fs hash>` + `LARECOMP_DEBUG_FRAMES=<n>`
+  (o passe que começa por esse shader, um quadro sem cada um dos seus draws: qual draw estraga a imagem).
 - **As vozes - resolvido (2026-10-25).** Eram duas coisas:
   - **Opus:** o FFmpeg do app não tinha o decodificador (ele precisa do `libswresample`, que o
     `android/deps/build_ffmpeg.sh` deixava de fora) e o `hwopus` devolvia silêncio. Agora o script compila o FFmpeg

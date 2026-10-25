@@ -1348,6 +1348,11 @@ void backend_present(NvnTexture *t) {
     static long debug_at = -1;
     if (debug_at < 0) { const char *e = getenv("LARECOMP_DEBUG_FRAME"); debug_at = e ? atol(e) : 0; }
     extern volatile int g_debug_frame_request;
+    if (total_frames % 30 == 0 && getenv("LARECOMP_DEBUG_DIR")) {  // (<dir>/dump_now, made by hand (adb): F9 for a phone)
+        char path[1024];
+        snprintf(path, sizeof path, "%s/dump_now", getenv("LARECOMP_DEBUG_DIR"));
+        if (remove(path) == 0) g_debug_frame_request = 1;
+    }
     if (g_debug_frame_request) { g_debug_frame_request = 0; debug_at = (long)total_frames + 1; }
     // LARECOMP_DEBUG_FRAMES=<n> (with LARECOMP_DEBUG_FRAME / F9): dump n consecutive frames (build/pass_<frame>_NNN.png)
     static long debug_n = -1;
