@@ -2,7 +2,7 @@
 
 [English](README.md) | **Português**
 
-Uma recompilação estática de *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, versão **1.4.2**) para
+Uma recompilação estática de *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, versão **1.4.3**) para
 Android, nos primeiros passos. **Não é emulação**: o código ARM64 do jogo vira C compilado para o seu celular, e os
 gráficos (NVN) são traduzidos para Vulkan.
 
@@ -11,8 +11,9 @@ Feito sobre o motor do **[LAS Recomp](https://github.com/peiikai/LASRecomp)**, d
 **[BOTWRecompAndroid](https://github.com/mamcjr/BOTWRecompAndroid)**, de onde este repositório saiu.
 
 > [!WARNING]
-> **No começo.** No celular (com o driver Turnip) um jogo novo começa e dá para mover o Link no prólogo, mas boa parte
-> da cena sai errada (magenta) e boa parte do som falta. O plano e o estado de cada fase estão em [docs/TOTK-PORT.md](docs/TOTK-PORT.md).
+> **No começo.** No celular (com o driver Turnip) o jogo carrega um save na caverna do prólogo e dá para mover o Link, a
+> cerca de 20 fps; pouco além disso foi jogado. O plano e o estado de cada fase estão em
+> [docs/TOTK-PORT.md](docs/TOTK-PORT.md).
 
 ## Plataforma
 
@@ -23,17 +24,17 @@ Android.
 
 - O app (tela inicial, configurações, controles de toque, controles físicos, mods, escolha do driver Vulkan) vem do
   BOTWRecompAndroid e compila.
-- O TOTK 1.4.2 roda sobre exatamente o mesmo SDK da Nintendo que o BOTW 1.8.2: os módulos `sdk` e `multimedia` são os
-  mesmos arquivos, e ele pede os mesmos 49 serviços do sistema. Tudo o que o motor aprendeu com o BOTW 1.8.2 (SDK
-  20.5.6, NVN 55.15) vale como está; só o código do próprio jogo (`main`) é novo.
-- O código do jogo é gerado e compila: 228.251 funções do `main` e 40.461 do SDK, num `totkgame.so` de 273 MB.
-- No celular (POCO F7 Ultra, driver Turnip): o jogo chega à **tela título** a 30 fps - o logo, os murais Zonai
-  animados, o menu em português - e os controles de toque navegam nela. Com o driver da própria Qualcomm a GPU se
-  perde logo depois da abertura.
-- Um jogo novo começa: a abertura e depois a caverna do prólogo com o Link controlável e o HUD em português, a cerca
-  de 20 fps.
-- Falta: os materiais da cena (boa parte em magenta), os sons que passam por splitters e o áudio Opus (mudos), os
-  vídeos, o widescreen, o desempenho.
+- A 1.4.3 roda sobre o SDK 20.5.22 da Nintendo, a mesma linha do 20.5.6 do BOTW 1.8.2 (NVN 55): o que o motor aprendeu
+  com o BOTW 1.8.2 vale. Os patches do jogo e muito do que se sabe dele vêm do
+  [MacNativeGames](https://github.com/ly05010419/MacNativeGames), que roda exatamente esta versão nativa em Macs e
+  iPhones.
+- O código do jogo é gerado e compila: 228.238 funções do `main` e 40.516 do SDK, num `totkgame.so` de 271 MB.
+- No celular (POCO F7 Ultra, driver Turnip): a tela título e depois um save carregado na caverna do prólogo, com o
+  Link controlável e o HUD e as dicas em português, a cerca de 20 fps. A cena fica em 1600x896 (a resolução dinâmica
+  do jogo dava quadros pretos a cada troca) e o mundo anda pelo tempo real. As vozes dos personagens, a música e o
+  ambiente chegam à mixagem (o decodificador Opus e os splitters do renderizador de áudio; conferido gravando a saída
+  na 1.4.2, a versão anterior do porte). Com o driver da própria Qualcomm a GPU se perde logo depois da abertura.
+- Falta: os vídeos (não conferidos), o widescreen, os 60 fps, o desempenho.
 
 > [!IMPORTANT]
 > Como o LAS Recomp, este projeto é feito quase inteiramente com IA (Claude, da Anthropic, pelo Claude Code), dirigido,
@@ -41,12 +42,13 @@ Android.
 
 > [!NOTE]
 > **Nenhum arquivo do jogo vem incluído.** É preciso o seu próprio dump, obtido legalmente, do *Tears of the Kingdom*
-> com a atualização 1.4.2 aplicada (`exefs` e `romfs`, extraídos). Não serão dadas instruções de como obtê-lo.
+> com a atualização 1.4.3 aplicada (`exefs` e o `romfs`). Não serão dadas instruções de como obtê-lo.
 
 ## Compilando (desenvolvedores)
 
-Com o SDK / NDK do Android e o seu dump em `Dump/0100F2C0115B6000/` (`exefs/` e `romfs/`; a pasta fica fora do git),
-com Python e os pacotes `lz4`, `capstone` e `unicorn`:
+Com o SDK / NDK do Android e o seu dump em `Dump/0100F2C0115B6000/` (`exefs/` e `romfs/`, ou a imagem do RomFS
+`romfs.bin`; a pasta fica fora do git), com Python e os pacotes `lz4`, `capstone` e `unicorn` (o
+`tools/nsp_extract.py` desempacota NSPs e as title keys deles para o hactoolnet):
 
 ```bash
 cd tools && python totk_dump.py                              # confere o dump (módulos, versão, romfs)
@@ -60,6 +62,10 @@ android/run_boot.sh 120                                      # inicia o jogo, lo
 
 - [peiikai](https://github.com/peiikai) pelo [LAS Recomp](https://github.com/peiikai/LASRecomp), o recompilador e o
   runtime de onde este projeto parte (MIT, ver [LICENSE](LICENSE)). O README original está em [docs/las/](docs/las/).
+- [MacNativeGames](https://github.com/ly05010419/MacNativeGames) (MIT), que roda o Tears of the Kingdom 1.4.3 nativo em
+  Macs e iPhones: os sítios de patch da 1.4.3 verificados por ele (a resolução fixa, o passo de quadro em tempo real, o
+  relógio de pano e cabelo, o tamanho de renderização) e o que ele descobriu (o flag de early-Z e o arredondamento da
+  altura de bloco do NVN, as leituras de profundidade e a comparação de sombra D16, o contador de visibilidade).
 - [LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid), o seu porte para Android, e
   [BOTWRecompAndroid](https://github.com/mamcjr/BOTWRecompAndroid) (o README dele em [docs/botw/](docs/botw/)): o app,
   a compilação do código do jogo no celular, os controles de toque, os mods, a compatibilidade de drivers, os menus em
