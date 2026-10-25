@@ -1658,14 +1658,28 @@ static void begin_pass(void) {
     pipeline_dirty = true;
     vk_end_pass();
     if (st.rt.depth && st.rt.ncolor >= 3 && st.rt.color[0] && vk_texture_scale_group(st.rt.color[0]) == RS_SCENE) {
-        g_scene_frame = renderer_present_count();
-        static float last_w, last_h;  // (LARECOMP_LOG_SCENE=1: the game's dynamic resolution, the G-buffer's size)
+        // (LARECOMP_LOG_SCENE=1: the game's dynamic resolution - the first such pass of each frame, its target's size,
+        // when it differs from the last frame's; TOTK draws several of them a frame, at other sizes too)
+        static uint32_t last_w, last_h;
         static int log_scene = -1;
         if (log_scene < 0) log_scene = getenv("LARECOMP_LOG_SCENE") != NULL;
-        if (log_scene && (st.viewport[0][2] != last_w || st.viewport[0][3] != last_h))
-            LOG("[scene] frame %llu: viewport %.0f x %.0f of %u x %u\n", (unsigned long long)g_scene_frame, st.viewport[0][2],
-                st.viewport[0][3], st.rt.color[0]->width, st.rt.color[0]->height);
-        last_w = st.viewport[0][2], last_h = st.viewport[0][3];
+        bool first = g_scene_frame != renderer_present_count();
+        g_scene_frame = renderer_present_count();
+        if (log_scene && first && (st.rt.color[0]->width != last_w || st.rt.color[0]->height != last_h)) {
+            LOG("[scene] frame %llu: %u x %u (viewport %.0f x %.0f), was %u x %u\n", (unsigned long long)g_scene_frame,
+                st.rt.color[0]->width, st.rt.color[0]->height, st.viewport[0][2], st.viewport[0][3], last_w, last_h);
+            // (LARECOMP_DEBUG_SCENE_CHANGE=<n>[@<frame>]: the rest of the frame of each of the first n changes from that
+            // frame on as a debug frame - its passes, as LARECOMP_DEBUG_FRAME's)
+            static int dump_left = -1;
+            static unsigned long long dump_from;
+            if (dump_left < 0) {
+                const char *e = getenv("LARECOMP_DEBUG_SCENE_CHANGE");
+                dump_left = 0;
+                if (e) sscanf(e, "%d@%llu", &dump_left, &dump_from);
+            }
+            if (last_w && dump_left > 0 && g_scene_frame >= dump_from) { dump_left--; g_debug_frame = true; LOG("===== debug frame %llu (scene size change) =====\n", (unsigned long long)g_scene_frame); }
+            last_w = st.rt.color[0]->width, last_h = st.rt.color[0]->height;
+        }
     }
 #ifdef __ANDROID__
     {   // LARECOMP_VK_ASYNC: the GPU starts on a frame while the render thread still translates the rest of it - a
