@@ -1,7 +1,7 @@
 # Plano: TOTKRecompAndroid
 
-Recompilação estática de *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, **1.4.2**: o jogo com a
-última atualização) para Android, a partir do motor do [LAS Recomp](https://github.com/peiikai/LASRecomp), do seu
+Recompilação estática de *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, **1.4.3** desde 2026-10-25;
+até então a 1.4.2 - as seções abaixo sobre o dump e as fases 0-5 foram escritas para ela) para Android, a partir do motor do [LAS Recomp](https://github.com/peiikai/LASRecomp), do seu
 porte para Android ([LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid)) e do
 [BOTWRecompAndroid](https://github.com/mamcjr/BOTWRecompAndroid), de onde este repositório saiu (com o histórico dos
 dois). Como neles, não é emulação: o código ARM64 do jogo vira C, compilado para o celular, e o NVN (a API gráfica do
@@ -68,8 +68,20 @@ passa para a **1.4.3**: os endereços e as instruções originais dos patches de
   de patch do MacNativeGames para 1.4.3 batem um a um com o nosso `main`; no 1.4.2 nenhum estava no mesmo endereço
   (o compilador mudou: alguns grupos aparecem deslocados, outros não).
 - **Código:** `gen.py` sem mudança (`sdk`: 40.516 funções, 1 instrução sem suporte - dados lidos como código, como
-  antes; `main`: 228.238 funções, 0 sem suporte, 2 min). `GAMELIB_GEN=generated-android-dyn-143
-  GAMELIB_OUT=android/out/v143 bash android/build_gamelib.sh <caminho absoluto>/Dump/v143/exefs`.
+  antes; `main`: 228.238 funções, 0 sem suporte, 2 min). `GAMELIB_GEN=$PWD/generated-android-dyn-143
+  GAMELIB_OUT=$PWD/android/out/v143 bash android/build_gamelib.sh <caminho absoluto>/Dump/0100F2C0115B6000/exefs`
+  (o `gen.py` lê o exefs de dentro de `tools/`: caminho absoluto). A compilação inteira levou **3 h 45** (271 MB);
+  uma regeração com patches novos só reescreve os chunks que mudam (`write_if_changed`): 4 arquivos, **1 min 14 s**.
+  As pastas ficaram com o sufixo `-143` / `v143` porque renomeá-las muda os caminhos dos objetos no CMake (uma
+  compilação inteira de novo).
+- **1.4.2 removida (2026-10-25):** o dump, o código gerado e o build dela no PC, os arquivos dela no celular e o
+  `GAME_V_142` do código. A 1.4.3 é a versão principal (`GAME_V_MAIN`): no PC em `Dump/0100F2C0115B6000`, no celular em
+  `files/extracted` (as pastas criadas pelo `adb` vieram `drwxrws---`: o app não lia o `exefs/main` - `chmod 775` nas
+  pastas, `666` nos arquivos, como os da 1.4.2 estavam). O save da 1.4.2 abre na 1.4.3.
+- **No celular (2026-10-25, Turnip):** a 1.4.3 inicia, passa da tela título e carrega o save na caverna (Link e Zelda
+  inteiros, HUD em português) a 20 fps. A cena fica em **1600x896 do começo ao fim** (uma linha `[scene]`, a do início)
+  e um vídeo de 8 s não tem quadro escuro (7 em 20 s antes). O passo em tempo real e os patches da segunda leva
+  (pano / cabelo, tamanho de renderização) não foram medidos no jogo ainda.
 - **Patches** (`tools/patches.py`, cada palavra original conferida antes):
   - `main+0x5848a8` (`mov w9, w23`): a escala do controlador de resolução dinâmica (`main+0x584300`) fica em 100 %
     (`rt_dynres_scale`; `LARECOMP_DYNRES=1` devolve a do jogo). Cada troca de tamanho do G-buffer (1600x896,
@@ -78,9 +90,15 @@ passa para a **1.4.3**: os endereços e as instruções originais dos patches de
     medido entre os presents (a média dos últimos 5, entre 1/120 e 1/15 s: `rt_frame_ratio30`,
     `rt_frame_interval60`). Um celular a 22 fps não roda mais em câmera lenta. `LARECOMP_REALTIME=0`: o valor nominal,
     bit a bit.
-  - Ainda não trazidos: 60 fps (7 sítios), o relógio de pano / cabelo a fps altos (4), o pulo em câmera lenta a fps
-    altos, widescreen / ultrawide (4 + Vert+), a resolução de saída e a de renderização (`TOTK_RENDER_RES`: uma opção
-    de qualidade / desempenho para celulares).
+  - `main+0x246eac` / `0x345904` e `0x249448` / `0x28bc94`: o segundo relógio do update de ator (pano e cabelo), que
+    não passa pelo FrameRateMgr: o mesmo passo medido (`rt_cloth_step`, `rt_cloth_ratio`; `LARECOMP_CLOTH_REALTIME=0`
+    desliga). Nos dois `bl 0x2a0e40` o patch fica na instrução antes do `bl` (o `mov w6, ...`), não no `bl`, que o
+    lifter transforma em chamada.
+  - `main+0x585e48` / `0x585e54` (`scvtf s0, w11` / `w10`): o tamanho da cena (`LARECOMP_RENDER_RES=<l>x<a>`, senão o
+    do jogo; acima de uma saída de 1920 de largura o jogo multiplica por saída / 1920, o que é desfeito). O padrão do
+    MacNativeGames no iPhone é 960x540 (GPU de 24,3 para 17,3 ms lá): a medir aqui.
+  - Ainda não trazidos: 60 fps (7 sítios), o pulo em câmera lenta a fps altos, widescreen / ultrawide (4 + Vert+), a
+    resolução de saída (a tela do celular é 20:9).
 - **Do que eles acharam, independente de versão (já aqui):** o early-Z do NVN (byte `+0x718` da seção de controle de
   0x880 bytes: `layout(early_fragment_tests)`), a altura de bloco do NVN (trunca `altura x 1,5 / 8`; o deko3d
   arredonda para cima), o contador de visibilidade (um vertex shader com ballot: aqui cada vértice que passa conta a si
@@ -125,13 +143,13 @@ forma genérica: os commits dele foram trazidos com os nomes trocados.
 - Saiu o companion ZeppOS (o mapa do BOTW no relógio) e o servidor dele no app (sem permissão de INTERNET). As artes
   de Zelda (ícone da Triforce, fundo da tela inicial, atlas Sheikah dos controles de toque) e o visual Sheikah dos
   menus ficam.
-- Versões: `GAME_V_142` (TOTK 1.4.2) é a versão principal, na raiz de dados. O mecanismo de versões lado a lado do
+- Versões: `GAME_V_142` (TOTK 1.4.2) era a versão principal, na raiz de dados (desde 2026-10-25, `GAME_V_143`). O mecanismo de versões lado a lado do
   BOTW (pastas `v<versão>`) ficou, sem nenhuma outra versão (`paths.c other_version`).
 - `game_new_sdk()` vale para o TOTK: NVN 55 e as esperas do SDK 20, os caminhos do BOTW 1.8.2.
 - O launcher e o app acham o romfs pelas pastas `Pack/` e `Mals/` (o do BOTW não tem `Mals/`).
 - O program id vem do `main.npdm` (`g_program_id`: GetInfo 18, base das DLCs).
 - Idiomas: os 13 do menu existem no jogo, nenhum vira inglês.
-- `tools/patches.py` ficou vazio para o 1.4.2 (os patches do BOTW estão no histórico).
+- `tools/patches.py` ficou vazio para o 1.4.2 (os patches do BOTW estão no histórico; os da 1.4.3: acima).
 - **O app compila** (`gradlew assembleDebug`: 3 min 21 s, APK de 98 MB).
 
 ### Fase 2: gerar o código do jogo — **gerado (2026-10-24)**
