@@ -522,8 +522,8 @@ NVN(nvnCommandBufferDrawElementsBaseVertex) {
 NVN(nvnCommandBufferDrawElementsInstanced) { trace_draw(c, c->x[3]); Snap s = snap(c); record(c, CMD_DRAW_ELEMENTS, 0, &s); }
 PLAIN(nvnCommandBufferDrawArraysIndirect, CMD_DRAW_ARRAYS_INDIRECT)
 PLAIN(nvnCommandBufferDrawElementsIndirect, CMD_DRAW_ELEMENTS_INDIRECT)
-NVN(nvnCommandBufferMultiDrawArraysIndirectCount) { (void)c; }
-NVN(nvnCommandBufferMultiDrawElementsIndirectCount) { (void)c; }
+NVN(nvnCommandBufferMultiDrawArraysIndirectCount) { static int n; if (n++ < 3) LOG("[nvn] MultiDrawArraysIndirectCount: not done\n"); }
+NVN(nvnCommandBufferMultiDrawElementsIndirectCount) { static int n; if (n++ < 3) LOG("[nvn] MultiDrawElementsIndirectCount: not done\n"); }
 NVN(nvnCommandBufferDrawTransformFeedback) { (void)c; }
 NVN(nvnCommandBufferDrawTexture) { (void)c; }
 PLAIN(nvnCommandBufferDispatchCompute, CMD_DISPATCH)

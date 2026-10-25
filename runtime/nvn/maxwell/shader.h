@@ -49,6 +49,8 @@ typedef struct {
     uint32_t vs_out_mask;   // fragment: varyings the vertex shader provides
     uint8_t glsl;           // emit Vulkan GLSL (see the contract above) instead of MSL
     bool gmem_linear_lookup;  // Qualcomm compute: cached linear GMap lookup avoids its compiler's binary-search failure
+    bool early_z;             // fragment: the NVN control section's early-Z-force flag (+0x718; in the padding: older
+                              // keys hash as before)
 } ShaderKey;
 
 typedef struct {

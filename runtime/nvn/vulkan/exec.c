@@ -5106,6 +5106,19 @@ static void draw_(CmdRec *r, bool indexed) {
     if (maxwell_gmem_miss_log)  // (copy mode: early depth tests for the shaders that log misses - ShaderKey)
         fkey.no_ds_write = !st.rt.depth || !((st.ds[0] && st.ds[1]) || (st.ds[3] && ((st.stencil_mask[0] | st.stencil_mask[1]) & 0xFF)));
 #endif
+    {   // The fragment shader's NVN control byte +0x718, in the 0x880-byte sections (TOTK's; the size word at +0x20 says
+        // 0x7cc..0x87f in BOTW's shorter ones): its early-Z-force flag - the Switch tests depth before such a shader runs.
+        // Without it the material shaders, which store a per-tile flag, test depth late, and an EQUAL test after the
+        // depth prepass can miss by an ulp (MacNativeGames' docs/how-it-works.md, "Early fragment tests"). LARECOMP_NO_EARLY_Z=1: off
+        static int off = -1;
+        if (off < 0) off = getenv("LARECOMP_NO_EARLY_Z") != NULL;
+        const uint8_t *ctl = st.program->stages[1].control;
+        if (ctl && !off) {
+            uint32_t size;
+            memcpy(&size, ctl + 0x20, 4);
+            fkey.early_z = !(size >= 0x7cc && size < 0x880) && (ctl[0x718] & 1);
+        }
+    }
     Prog *pr = get_program(st.program, &vkey, &fkey);
     bool keep = false;  // (a target built once and kept: wait for the shader and pipeline - wait_built)
     {   // (the same targets as the previous draw, same frame: their answer again - reading 6 texture objects a draw
@@ -5844,6 +5857,16 @@ static void draw_(CmdRec *r, bool indexed) {
             n += snprintf(b + n, sizeof b - n, " | vs cb");
             for (int k = 0; k < 18 && n < (int)sizeof b - 24; k++)
                 if (st.ubuf[0][k].size) n += snprintf(b + n, sizeof b - n, " %d:%llu", k, (unsigned long long)st.ubuf[0][k].size);
+            // the fragment shader's textures: address, size, and how many frames ago a draw last rendered into them
+            n += snprintf(b + n, sizeof b - n, " | fs tex");
+            for (int k = 0; pr->fi && k < pr->fi->ntex && n < (int)sizeof b - 48; k++) {
+                NvnTexture *t = shader_texture_object(1, &pr->fi->tex[k]);
+                TexBackend *tb = t ? t->backend : NULL;
+                if (!t) { n += snprintf(b + n, sizeof b - n, " -"); continue; }
+                n += snprintf(b + n, sizeof b - n, " %llx:%ux%u", (unsigned long long)t->addr, t->width, t->height);
+                if (tb && tb->rt_frame)
+                    n += snprintf(b + n, sizeof b - n, "@%lld", (long long)renderer_present_count() - (long long)(tb->rt_frame - 1));
+            }
             LOG("%s\n", b);
         }
     }
@@ -6116,9 +6139,12 @@ static void copy_buffer_to_texture(uint64_t src, const TexRefRec *dst) {
 
 static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
     NvnTexture *t = (NvnTexture *)(uintptr_t)src->tex;
-    {   static int nlog;  // LARECOMP_LOG_READBACK=1: the game's texture readbacks (the save thumbnail is one)
-        if (getenv("LARECOMP_LOG_READBACK") && nlog++ < 20) LOG("[vk] texture -> buffer %p %ux%u f%#x flags %#x -> %llx\n", (void *)t, t ? t->width : 0, t ? t->height : 0,
-                             t ? t->format : 0, t ? t->flags : 0, (unsigned long long)dst);
+    {   static int nlog;  // LARECOMP_LOG_READBACK=1: the game's texture readbacks (the save thumbnail is one); =2: all
+        static int max = -1;
+        if (max < 0) max = !getenv("LARECOMP_LOG_READBACK") ? 0 : atoi(getenv("LARECOMP_LOG_READBACK")) > 1 ? 1 << 30 : 20;
+        if (nlog++ < max) LOG("[vk] texture -> buffer %p %llx %ux%u f%#x flags %#x -> %llx (frame %llu)\n", (void *)t,
+                              (unsigned long long)(t ? t->addr : 0), t ? t->width : 0, t ? t->height : 0, t ? t->format : 0,
+                              t ? t->flags : 0, (unsigned long long)dst, (unsigned long long)renderer_present_count());
     }
     if (!t || !dst || dst < HEAP_BASE) return;
     alias_catch_up(t);
@@ -6164,8 +6190,9 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
     wait_why = "texture -> buffer readback";
     renderer_flush();  // the CPU may read the result right after the fence
     memcpy((void *)(uintptr_t)dst, out.ptr, total);
-    {   static int nlog;
-        if (getenv("LARECOMP_LOG_READBACK") && nlog++ < 20) {
+    {   static int nlog, max = -1;
+        if (max < 0) max = !getenv("LARECOMP_LOG_READBACK") ? 0 : atoi(getenv("LARECOMP_LOG_READBACK")) > 1 ? 1 << 30 : 20;
+        if (nlog++ < max) {
             uint64_t nz = 0;
             for (uint64_t k = 0; k < total; k += 4) nz += ((const uint32_t *)out.ptr)[k / 4] != 0;
             LOG("[vk]   read back %llu bytes (%llu words nonzero), gpu_owned %d, aliased %d, level %d region %d %d %d %d %d %d\n",
@@ -7026,6 +7053,14 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_COPY_BUFFER_TO_TEXTURE: copy_buffer_to_texture(r->x[0], x); break;
         case CMD_COPY_TEXTURE_TO_BUFFER: copy_texture_to_buffer(x, r->x[3]); break;
         case CMD_SIGNAL_EVENT: event_signal(r); break;
+        case CMD_DRAW_ARRAYS_INDIRECT: case CMD_DRAW_ELEMENTS_INDIRECT: case CMD_DISPATCH_INDIRECT: {
+            static int n[3];
+            int k = r->op == CMD_DISPATCH_INDIRECT ? 2 : r->op == CMD_DRAW_ELEMENTS_INDIRECT;
+            if (n[k]++ < 4)
+                LOG("[vk] %s: not done (frame %llu, fs %016llx)\n", k == 2 ? "DispatchComputeIndirect" : k ? "DrawElementsIndirect" :
+                    "DrawArraysIndirect", (unsigned long long)renderer_present_count(), (unsigned long long)g_cur_fs_hash);
+            break;
+        }
         case CMD_WAIT_EVENT: break;  // (one queue, in order: what it waits for already ran - or is the CPU's to signal)
         case CMD_COPY_BUFFER_TO_BUFFER:
             wait_why = "buffer -> buffer copy";

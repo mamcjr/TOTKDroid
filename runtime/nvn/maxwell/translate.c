@@ -3022,8 +3022,10 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         // shaded, the lit pass ~2x slower; with no discard, depth write or store of its own the shader's depth test
         // is early anyway - and with a discard too when the draw writes no depth / stencil: the alpha-tested lit
         // shaders, after the depth prepass)
-        if (GMISS_ON(stage) && info->uses_gmem_map && !c->uses_gmem_store && !c->omap_depth &&
-            (!info->uses_discard || (key && key->no_ds_write)))
+        // (and the shaders whose NVN control asks for it: ShaderKey early_z)
+        if ((key && key->early_z && !c->omap_depth) ||
+            (GMISS_ON(stage) && info->uses_gmem_map && !c->uses_gmem_store && !c->omap_depth &&
+             (!info->uses_discard || (key && key->no_ds_write))))
             sp(&s, "layout(early_fragment_tests) in;\n");
     } else {
         sp(&s, "layout(local_size_x_id = 0, local_size_y_id = 1, local_size_z_id = 2) in;\n");
