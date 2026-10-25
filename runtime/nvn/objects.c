@@ -1369,6 +1369,27 @@ static float frame_step(float nominal_s) {
 }
 float rt_frame_ratio30(float nominal) { return frame_step(nominal / 30.0f) * 30.0f; }       // the step / (1/30 s)
 float rt_frame_interval60(float nominal) { return frame_step(nominal / 60.0f) * 60.0f; }    // the step in 60 Hz vsyncs
+// The cloth and hair clock (the actor update's second one): the same step. LARECOMP_CLOTH_REALTIME=0: nominal
+static int cloth_on(void) {
+    static int on = -1;
+    if (on < 0) on = !getenv("LARECOMP_CLOTH_REALTIME") || atoi(getenv("LARECOMP_CLOTH_REALTIME"));
+    return on;
+}
+float rt_cloth_step(float nominal_s) { return cloth_on() ? frame_step(nominal_s) : nominal_s; }       // seconds
+float rt_cloth_ratio(void) { return cloth_on() ? frame_step(1.0f / 30.0f) * 30.0f : 1.0f; }            // vs 30 fps
+// The scene's render size (axis 0 width, 1 height; tools/patches.py): LARECOMP_RENDER_RES=<w>x<h>, else the game's own
+// (handheld 1280x720, docked 1600x900). The game scales it by output width / 1920 past 1920: divided out here.
+float rt_render_size(int axis, int32_t game, int32_t output_w) {
+    static int w = -1, h;
+    if (w < 0) {
+        w = h = 0;
+        const char *e = getenv("LARECOMP_RENDER_RES");
+        if (e && (sscanf(e, "%dx%d", &w, &h) != 2 || w < 64 || h < 64 || w > 4096 || h > 4096)) w = h = 0;
+        if (w) LOG("[totk] scene render size %dx%d (LARECOMP_RENDER_RES; the game's own: %d on this axis)\n", w, h, game);
+    }
+    float k = output_w > 1920 ? output_w / 1920.0f : 1.0f;
+    return w ? (axis ? h : w) / k : (float)game;
+}
 // The dynamic resolution controller's scale (a float's bits, its tier): held at 100 % - each step of its tiers gave a
 // frame without the world (tools/patches.py). LARECOMP_DYNRES=1: the game's own.
 uint32_t rt_dynres_scale(uint32_t game) {

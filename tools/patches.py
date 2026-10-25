@@ -21,10 +21,8 @@ same way: its addresses and words matched this build's main one for one.
 """
 import struct
 
-BUILD_TOTK_1_4_2 = '5cb42b1cf25469fb'
 BUILD_TOTK_1_4_3 = '277178b7dba1b6d4'
-PATCHES_142 = {}  # Tears of the Kingdom 1.4.2 (main build 5cb42b1c...): none
-PATCHES_143 = {}  # Tears of the Kingdom 1.4.3 (main build 277178b7...)
+PATCHES_143 = {}  # Tears of the Kingdom 1.4.3 (main build 277178b7...; 1.4.2, the port's first, had none)
 
 
 def _word(gen, a):
@@ -72,6 +70,53 @@ def _step_interval(gen, a):
             f'  /* {a:#x}: fmul s8, s0, s1 (s0: 60 / fps) */')
 
 
+# Cloth and hair: the actor animation update has a second, unscaled clock (ordinary animation gets FrameRateMgr's step,
+# above). Two actor paths build it inline - {seconds = factor x 1/30, ratio = factor} on the stack - and two others pass
+# it in s2 / s3 to the shared update at main+0x2a0e40 (its third caller already passes measured time: left alone).
+# With the world on real time and the phone off 30 fps, cloth and hair ran at the wrong speed. rt_cloth_step /
+# rt_cloth_ratio: the measured step (LARECOMP_REALTIME=0 or LARECOMP_CLOTH_REALTIME=0: the nominal, bit for bit).
+def _cloth_inline(seconds_off, ratio_off, factor, nominal, dest, word, what):
+    def patch(gen, a):
+        _expect(gen, a, word)
+        return ('{ extern float rt_cloth_step(float); float fac, nom; '
+                f'memcpy(&fac, &c->v[{factor}], 4); memcpy(&nom, &c->v[{nominal}], 4); float step = rt_cloth_step(nom); '
+                f'float ratio = step * 30.0f * fac, sec = step * fac; uint32_t rb; memcpy(&rb, &ratio, 4); '
+                f'ST32(c->sp + {ratio_off:#x}ull, rb); c->v[{dest}] = 0; memcpy(&c->v[{dest}], &sec, 4); }}'
+                f'  /* {a:#x}: {what} (seconds -> sp+{seconds_off:#x} next, ratio at sp+{ratio_off:#x}) */')
+    return patch
+
+
+def _cloth_call_args(word, src, what):
+    def patch(gen, a):
+        _expect(gen, a, word)
+        return (f'{{ c->x[6] = (uint64_t)(uint32_t)c->x[{src}]; extern float rt_cloth_ratio(void); float r = rt_cloth_ratio(), '
+                's2, s3; memcpy(&s2, &c->v[2], 4); memcpy(&s3, &c->v[3], 4); s2 *= r; s3 *= r; '
+                'c->v[2] = 0; memcpy(&c->v[2], &s2, 4); c->v[3] = 0; memcpy(&c->v[3], &s3, 4); }'
+                f'  /* {a:#x}: {what}, and the clock in s2 / s3 for the bl 0x2a0e40 next */')
+    return patch
+
+
+PATCHES_143[0x7000246eac] = _cloth_inline(0x360, 0x364, 10, 0, 0, 0x1e200940, 'fmul s0, s10, s0')
+PATCHES_143[0x7000345904] = _cloth_inline(0x110, 0x114, 0, 1, 1, 0x1e210801, 'fmul s1, s0, s1')
+PATCHES_143[0x7000249448] = _cloth_call_args(0x2a1403e6, 20, 'mov w6, w20')
+PATCHES_143[0x700028bc94] = _cloth_call_args(0x2a1a03e6, 26, 'mov w6, w26')
+
+# The scene's render size: every path that picks it (the mode entry's: handheld 1280x720, docked 1600x900) converts its
+# width and height to float here, into the renderer's +0xcc4 / +0xcc8 (w9: the output width, +0xcc0; the game scales the
+# scene by output width / 1920 past 1920). rt_render_size: LARECOMP_RENDER_RES=<w>x<h> (MacNativeGames' iPhone default
+# is 960x540, the game's FSR 1 upscaling it: GPU 24.3 -> 17.3 ms there), else the game's own.
+def _render_size(axis, reg, word):
+    def patch(gen, a):
+        _expect(gen, a, word)
+        return (f'{{ extern float rt_render_size(int, int32_t, int32_t); float f = rt_render_size({axis}, '
+                f'(int32_t)c->x[{reg}], (int32_t)c->x[9]); c->v[0] = 0; memcpy(&c->v[0], &f, 4); }}'
+                f'  /* {a:#x}: scvtf s0, w{reg} (the scene\'s {"width" if axis == 0 else "height"}) */')
+    return patch
+
+
+PATCHES_143[0x7000585e48] = _render_size(0, 11, 0x1e220160)
+PATCHES_143[0x7000585e54] = _render_size(1, 10, 0x1e220140)
+
 PATCHES_143[0x70005848a8] = _dynres_scale
 PATCHES_143[0x70002daa54] = _step_ratio_load
 PATCHES_143[0x70002daa6c] = _drop(0x5e21d800, 'scvtf s0, s0')
@@ -82,4 +127,4 @@ PATCHES_143[0x70003e5658] = _step_interval
 
 def patches_for(build_id):
     """The patches for a module, by its build id (sdk and anything unknown: none)."""
-    return {BUILD_TOTK_1_4_2: PATCHES_142, BUILD_TOTK_1_4_3: PATCHES_143}.get(build_id[:16], {})
+    return {BUILD_TOTK_1_4_3: PATCHES_143}.get(build_id[:16], {})
