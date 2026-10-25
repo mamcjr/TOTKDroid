@@ -241,6 +241,32 @@ Falta:
 ### Fase 7: desempenho
 
 - Ritmo de quadros, resolução, widescreen: achar os pontos do TOTK (`tools/patches.py`).
+- **Trazido do LASRecompAndroid e do BOTWRecompAndroid (2026-10-25)** - o que o motor ganhou lá depois que o BOTW saiu
+  do LAS (2026-10-17) e não depende do jogo:
+  - **Memória global por ponteiro** (LAS `1883b8d`): o heap do TOTK (2144 MB) passa do alcance de um storage buffer
+    no Adreno 830 (2047 MB); acima disso os shaders liam zero, salvo os storage buffers ligados ao draw (as janelas
+    do BOTW, `gwin_mode`). Agora, com `bufferDeviceAddress`, todo acesso alcança o heap inteiro; as janelas só sem
+    ele. `LARECOMP_VK_GMEM_BDA=0/1`.
+  - **UBWC** (LAS `4380fe5`): os render targets listam os formatos das suas vistas e o Turnip os comprime (-8% de
+    GPU no S20 FE da medição original). `LARECOMP_VK_FMTLIST=0` desliga.
+  - **Cópias de cor preguiçosas** (LAS `d0b1c66`): cópias de imagem inteira viram alias e só se fazem quando alguém
+    lê o destino (~1 ms de GPU no LAS). `LARECOMP_VK_COPY_LAZY=0` desliga.
+  - **Checagem de texturas** (LAS `05b5f2b`, `e811c6e`): hash completo em 8 trilhas; sem amostra para texturas
+    dinâmicas; e cada textura identificada uma vez por conteúdo (o `-1` de "nenhuma" virava 0, "não checada": toda
+    textura sem patch era identificada de novo a cada checagem). No Android a amostra fica nos 1024 pontos do BOTW.
+  - **Build do código do jogo** (LAS `d2da382`): o maior arquivo pronto primeiro e `-mllvm -dag-maps-huge-region=500`
+    (o escalonador quadrático em sequências enormes de stores: 4,3 s -> 0,7 s num arquivo) - no celular e no PC
+    (`android/gamelib/CMakeLists.txt`, fora das flags que entram no id do código: o `totkgame.so` atual vale).
+  - Correções do tradutor: `LDC.64` com o registrador de endereço também destino (LAS `764e4bf`), `I2I .SAT`, modos
+    do `SHF`, `HSETP2 .H_AND` (LAS `d813760`; `tools/test_translate_ops.sh`: 29 casos, 0 falhas). O fuzz GLSL
+    (8.000 programas): 4.231 compilados e validados, as 26 falhas são as de `textureGather` de antes.
+  - Compatibilidade: sem import do heap por padrão (LAS `4a8749f`, Xclipse / Mali), BC4/BC5 com sinal na CPU (LAS
+    `bf48501`), Vulkan sem synchronization2 / estado dinâmico / demote / 16-bit (BOTW `2c08088`), a causa de uma falha
+    da preparação dos arquivos na tela (BOTW `ffca023`).
+  - Ficaram de fora: o que é do LAS (ganchos do jogo, versões 1.0.1/1.1.0, PhysX, warps, ultrawide), os tamanhos
+    próprios dos alvos de brilho/água do LAS (`95c5b52`), o build quente/frio (precisa de uma lista de funções
+    quentes do TOTK) e a **geração de quadros** por reprojeção (LAS `4ab0b3d` e seguintes, ~700 linhas com
+    heurísticas da cena do LAS) - candidata para depois, com o TOTK a 20-30 fps.
 
 ### Fase 8: distribuição
 
