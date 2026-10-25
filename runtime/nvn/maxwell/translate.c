@@ -652,7 +652,11 @@ static void glsl_sample(Ctx *c, char *out, int slot, const char *const *co, cons
     } else if (type == TEXTYPE_1D) {
         snprintf(P, sizeof P, "vec3(%s, 0.0f, %s)", xs, dref);
     } else if (layer) {
-        snprintf(P, sizeof P, "vec%d(%s, float(%s), %s)", n + 2, xs, layer, dref);
+        // (an array's compare: TOTK's shadow cascades, D16. Maxwell rounds the reference to the texture's precision
+        // before comparing; compared in full float, a lit surface narrowly failed its own compare - dark patches,
+        // hard-edged blocks at the cascades' borders. MacNativeGames PR #104 does the same for arrays alone, the
+        // only compare-sampled D16 textures there)
+        snprintf(P, sizeof P, "vec%d(%s, float(%s), round(%s * 65535.0f) / 65535.0f)", n + 2, xs, layer, dref);
     } else {
         snprintf(P, sizeof P, "vec%d(%s, %s)", n + 1, xs, dref);
     }

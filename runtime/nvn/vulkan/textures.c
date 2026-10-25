@@ -1275,6 +1275,28 @@ VkSampler vk_sampler_plain(NvnSamplerDesc *d) {
     return p;
 }
 
+// The sampler for a lookup without depth comparison of a depth texture: point sampled, mip included. The game binds a
+// trilinear sampler for such reads, but on the Switch they land on one texel; filtered, TOTK's 200x112 shadow mask
+// rebuilt positions in mid-air at object edges and shadowed them - a dark halo around Link on the wall behind him
+// (MacNativeGames PR #104). LARECOMP_DEPTH_FILTERED=1: as the game's sampler says.
+VkSampler vk_sampler_point(NvnSamplerDesc *d) {
+    static int off = -1;
+    if (off < 0) off = getenv("LARECOMP_DEPTH_FILTERED") != NULL;
+    VkSampler s = vk_sampler_plain(d);
+    if (off || (d->mag_filter != 1 && d->min_filter != 1 && d->min_filter < 3 && d->max_aniso <= 1)) return s;
+    static struct { VkSampler from, point; } tab[256];
+    static int n, next;
+    for (int i = 0; i < n; i++) if (tab[i].from == s) return tab[i].point;
+    NvnSamplerDesc p = *d;
+    p.mag_filter = 0;
+    p.min_filter = p.min_filter <= 1 ? 0 : 2;  // (nearest, or nearest of the nearest level)
+    p.max_aniso = 1;
+    VkSampler q = make_sampler(&p, false);
+    int i = n < 256 ? n++ : next++ % 256;
+    tab[i].from = s; tab[i].point = q;
+    return q;
+}
+
 static VkSampler make_sampler(const NvnSamplerDesc *d, bool compare) {
     VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     si.magFilter = d->mag_filter == 1 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;

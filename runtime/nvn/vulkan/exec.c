@@ -4615,8 +4615,10 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
     uint32_t tic = h & 0xFFFFF, tsc = (uint32_t)(h >> 20) & 0xFFF;
     sc[0] = sc[1] = 1;
     wh[0] = wh[1] = 0;
+    NvnTexture *bound = NULL;  // (the texture, for the sampler below)
     if (h && st.tpool && tic < (uint32_t)st.tpool->count) {
         NvnTexEntry *e = &((NvnTexEntry *)st.tpool->entries)[tic];
+        bound = e->tex;
         if (e->tex) {
             // Per-frame memo: ~2400 lookups per overworld frame recomputed the view (format / range math, cache
             // probe). The first lookup of a frame still runs vk_view (upload check); a view that may have been
@@ -4664,7 +4666,11 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
     }
     if (h && st.spool && tsc < (uint32_t)st.spool->count) {
         NvnSamplerDesc *sd = &((NvnSamplerDesc *)st.spool->entries)[tsc];
-        smp = st_->shadow ? vk_sampler(sd) : vk_sampler_plain(sd);
+        extern VkSampler vk_sampler_point(NvnSamplerDesc *d);
+        extern bool renderer_format_is_depth(uint32_t f);
+        smp = st_->shadow ? vk_sampler(sd)
+            : bound && renderer_format_is_depth(bound->format) ? vk_sampler_point(sd)  // (a depth read: one texel)
+            : vk_sampler_plain(sd);
     }
     if (!view) view = vk_dummy_view(st_->type);
     if (!smp) smp = vk_default_sampler(true);
