@@ -1138,6 +1138,53 @@ static void emit_tmml(Ctx *c, uint64_t w, bool bindless, uint32_t pc) {
 }
 
 // ------------------------------------------------------------------ instruction translation
+// ------------------------------------------------------------------ doubles (GLSL: in fp32, d2f / f2d in the prelude)
+// A double in register pair r:r+1, as a float
+static const char *dreg(Ctx *c, int r, char *buf) {
+    sprintf(buf, "d2f(%s, %s)", R(r), r == RZ ? "0u" : R(r + 1));
+    return buf;
+}
+// Operand B of a double op: register pair (20), 64-bit constant (cbuf at 34 / 20), or the immediate's top 20 bits of
+// the double (as the float immediate's are of a float: its high word)
+static const char *dsrc_b(Ctx *c, uint64_t w, char *buf) {
+    char lo[128], hi[128];
+    switch (b_form(w)) {
+    case B_REG: return dreg(c, (int)bits(w, 20, 8), buf);
+    case B_CBUF:
+        cbuf_ref(c, (int)bits(w, 34, 5), bits(w, 20, 14) * 4, NULL, lo);
+        cbuf_ref(c, (int)bits(w, 34, 5), bits(w, 20, 14) * 4 + 4, NULL, hi);
+        sprintf(buf, "d2f(%s, %s)", lo, hi);
+        return buf;
+    default:
+        sprintf(buf, "d2f(0u, %s)", operand_b(c, w, true, hi));
+        return buf;
+    }
+}
+// DADD, DMUL, DFMA, DMNMX, DSETP (each in its register / constant / immediate forms)
+static bool is_double_op(uint64_t w) {
+    static const struct { uint64_t val, mask; } ops[] = {
+        {0x5c70000000000000ull, 0xfff8000000000000ull}, {0x4c70000000000000ull, 0xfff8000000000000ull},
+        {0x3870000000000000ull, 0xfef8000000000000ull}, {0x5c80000000000000ull, 0xfff8000000000000ull},
+        {0x4c80000000000000ull, 0xfff8000000000000ull}, {0x3880000000000000ull, 0xfef8000000000000ull},
+        {0x5b70000000000000ull, 0xfff0000000000000ull}, {0x5370000000000000ull, 0xfff0000000000000ull},
+        {0x4b70000000000000ull, 0xfff0000000000000ull}, {0x3670000000000000ull, 0xfef0000000000000ull},
+        {0x5c50000000000000ull, 0xfff8000000000000ull}, {0x4c50000000000000ull, 0xfff8000000000000ull},
+        {0x3850000000000000ull, 0xfef8000000000000ull}, {0x5b80000000000000ull, 0xfff0000000000000ull},
+        {0x4b80000000000000ull, 0xfff0000000000000ull}, {0x3680000000000000ull, 0xfef0000000000000ull}};
+    for (size_t i = 0; i < sizeof ops / sizeof *ops; i++)
+        if ((w & ops[i].mask) == ops[i].val) return true;
+    return false;
+}
+// A float into the pair d:d+1 as a double
+static void set_dreg(Ctx *c, int d, const char *expr) {
+    if (d == RZ) return;
+    c->reg_used[d] = 1;
+    if (d + 1 < RZ) c->reg_used[d + 1] = 1;
+    sp(&c->body, "    { uvec2 dd_ = f2d(%s); r%d = dd_.x;", expr, d);
+    if (d + 1 < RZ) sp(&c->body, " r%d = dd_.y;", d + 1);
+    sp(&c->body, " }\n");
+}
+
 // ------------------------------------------------------------------ global memory (LDG / STG / RED / ATOM)
 // Opens a global memory access to [reg a (a + 1 too when wide) + off]: "    { <ga> ...; bool ok = ...;\n", ga its
 // offset in the guest heap the gmem buffer maps (uint with maxwell_no_int64, else ulong), ok whether it's inside.
@@ -1454,6 +1501,7 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         char srcv[512];
         if (bits(w, 10, 2) == 1 && c->glsl) sprintf(srcv, "h2f((%s >> %du) & 0xFFFFu)", B(false), 16 * (int)bits(w, 41, 1));
         else if (bits(w, 10, 2) == 1) sprintf(srcv, "float(as_type<half2>(%s)[%d])", B(false), (int)bits(w, 41, 1));
+        else if (bits(w, 10, 2) == 3 && c->glsl) dsrc_b(c, w, srcv);  // (an F64 source)
         else strcpy(srcv, F(B(true)));
         const char *x = NA(srcv, bits(w, 45, 1), bits(w, 49, 1));
         int rnd = (int)bits(w, 39, 2);
@@ -1479,15 +1527,18 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
             snprintf(h, sizeof h, c->glsl ? "(packHalf2x16(vec2(%s, 0.0f)))" : "(uint(as_type<ushort>(half(%s))))",
                      NA(u, bits(w, 45, 1), bits(w, 49, 1)));
             set_reg(c, d, h);
+        } else if (bits(w, 8, 2) == 3 && c->glsl) {  // F64 result in d:d+1
+            set_dreg(c, d, NA(u, bits(w, 45, 1), bits(w, 49, 1)));
         } else {
             set_reg(c, d, FRES(NA(u, bits(w, 45, 1), bits(w, 49, 1)), false));
         }
     } else if (OPM(0x5ca8000000000000ull, 0xfff8000000000000ull) || OPM(0x4ca8000000000000ull, 0xfff8000000000000ull) ||
                OPM(0x38a8000000000000ull, 0xfef8000000000000ull)) {  // F2F (formats: 1 F16, 2 F32; bit 41 = high half)
-        int dfmt = (int)bits(w, 8, 2), sfmt = (int)bits(w, 10, 2);
+        int dfmt = (int)bits(w, 8, 2), sfmt = (int)bits(w, 10, 2);  // (3: F64 - GLSL, through fp32)
         char srcv[512];
         if (sfmt == 1 && c->glsl) sprintf(srcv, "h2f((%s >> %du) & 0xFFFFu)", B(false), 16 * (int)bits(w, 41, 1));
         else if (sfmt == 1) sprintf(srcv, "float(as_type<half2>(%s)[%d])", B(false), (int)bits(w, 41, 1));
+        else if (sfmt == 3 && c->glsl) dsrc_b(c, w, srcv);
         else strcpy(srcv, F(B(true)));
         const char *x = NA(srcv, bits(w, 45, 1), bits(w, 49, 1));
         int mode = (int)((bits(w, 39, 2)) | (bits(w, 42, 1) << 2));
@@ -1503,6 +1554,8 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
             snprintf(h, sizeof h, c->glsl ? "(packHalf2x16(vec2(%s, 0.0f)))" : "(uint(as_type<ushort>(half(%s))))",
                      bits(w, 50, 1) ? (sprintf(u, "saturate(%s)", t), u) : t);
             set_reg(c, d, h);
+        } else if (dfmt == 3 && c->glsl) {  // F64 result in d:d+1
+            set_dreg(c, d, bits(w, 50, 1) ? (sprintf(u, "saturate(%s)", t), u) : t);
         } else {
             set_reg(c, d, FRES(t, bits(w, 50, 1)));
         }
@@ -2037,6 +2090,52 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
             }
             sp(&c->body, "    }\n");
         }
+    } else if (!c->glsl && is_double_op(w)) {
+        fail(c, "double ops: GLSL only");
+    } else if (OPM(0x5c70000000000000ull, 0xfff8000000000000ull) || OPM(0x4c70000000000000ull, 0xfff8000000000000ull) ||
+               OPM(0x3870000000000000ull, 0xfef8000000000000ull)) {  // DADD
+        char da[96], db[160];
+        const char *x = NA(dreg(c, a, da), bits(w, 48, 1), bits(w, 46, 1)), *y = NA(dsrc_b(c, w, db), bits(w, 45, 1), bits(w, 49, 1));
+        sprintf(t, "(%s + %s)", x, y);
+        set_dreg(c, d, t);
+    } else if (OPM(0x5c80000000000000ull, 0xfff8000000000000ull) || OPM(0x4c80000000000000ull, 0xfff8000000000000ull) ||
+               OPM(0x3880000000000000ull, 0xfef8000000000000ull)) {  // DMUL (TOTK's vertex shaders: positions in doubles)
+        char da[96], db[160];
+        sprintf(t, "(%s * %s)", NA(dreg(c, a, da), bits(w, 48, 1), false), dsrc_b(c, w, db));
+        set_dreg(c, d, t);
+    } else if (OPM(0x5b70000000000000ull, 0xfff0000000000000ull) || OPM(0x5370000000000000ull, 0xfff0000000000000ull) ||
+               OPM(0x4b70000000000000ull, 0xfff0000000000000ull) || OPM(0x3670000000000000ull, 0xfef0000000000000ull)) {  // DFMA
+        char da[96], db[160], dc[160], cl[128], ch[128];
+        const char *bv, *cv;
+        if (OPM(0x5370000000000000ull, 0xfff0000000000000ull)) {  // rc: B = pair at 39, C = constant
+            bv = dreg(c, (int)bits(w, 39, 8), db);
+            cbuf_ref(c, (int)bits(w, 34, 5), bits(w, 20, 14) * 4, NULL, cl);
+            cbuf_ref(c, (int)bits(w, 34, 5), bits(w, 20, 14) * 4 + 4, NULL, ch);
+            sprintf(dc, "d2f(%s, %s)", cl, ch);
+            cv = dc;
+        } else {
+            bv = dsrc_b(c, w, db);
+            cv = dreg(c, (int)bits(w, 39, 8), dc);
+        }
+        sprintf(t, "fma(%s, %s, %s)", dreg(c, a, da), NA(bv, bits(w, 48, 1), false), NA(cv, bits(w, 49, 1), false));
+        set_dreg(c, d, t);
+    } else if (OPM(0x5c50000000000000ull, 0xfff8000000000000ull) || OPM(0x4c50000000000000ull, 0xfff8000000000000ull) ||
+               OPM(0x3850000000000000ull, 0xfef8000000000000ull)) {  // DMNMX (the predicate picks min)
+        char da[96], db[160];
+        const char *x = NA(dreg(c, a, da), bits(w, 48, 1), bits(w, 46, 1)), *y = NA(dsrc_b(c, w, db), bits(w, 45, 1), bits(w, 49, 1));
+        sprintf(t, "(%s ? fmin(%s, %s) : fmax(%s, %s))", P((int)bits(w, 39, 3), bits(w, 42, 1)), x, y, x, y);
+        set_dreg(c, d, t);
+    } else if (OPM(0x5b80000000000000ull, 0xfff0000000000000ull) || OPM(0x4b80000000000000ull, 0xfff0000000000000ull) ||
+               OPM(0x3680000000000000ull, 0xfef0000000000000ull)) {  // DSETP (FSETP's fields)
+        char da[96], db[160], cmp[600];
+        const char *x = NA(dreg(c, a, da), bits(w, 43, 1), bits(w, 7, 1)), *y = NA(dsrc_b(c, w, db), bits(w, 6, 1), bits(w, 44, 1));
+        fcmp_expr(cmp, (int)bits(w, 48, 4), x, y);
+        int p = (int)bits(w, 3, 3), q = (int)bits(w, 0, 3), bo = (int)bits(w, 45, 2);
+        const char *pc_ = P((int)bits(w, 39, 3), bits(w, 42, 1));
+        if (p != PT) { c->pred_used[p] = 1; sp(&c->body, "    { bool cmp = %s; bool pp = %s;\n      p%d = cmp %s pp;\n", cmp, pc_, p, bool_op(bo)); }
+        else sp(&c->body, "    { bool cmp = %s; bool pp = %s;\n", cmp, pc_);
+        if (q != PT) { c->pred_used[q] = 1; sp(&c->body, "      p%d = !cmp %s pp;\n", q, bool_op(bo)); }
+        sp(&c->body, "    }\n");
     } else if (OPM(0x3a00000000000000ull, 0xfe00000000000000ull)) {  // VMNMX
         // VMNMX d = op(min / max(a, b), c): video min / max of a byte, half or word of a and b (formats: 0-3 a byte,
         // 4-5 a half, 6 the word; each signed or not), then with c by op: 0 / 1 merged into its high / low half,
@@ -2326,6 +2425,15 @@ static const char glsl_prelude[] =
     "vec2 unpack_h2(uint v) { return vec2(h2f(v & 0xFFFFu), h2f(v >> 16)); }\n"
     "vec2 hx(uint v, uint swz) { if (swz == 1u) return vec2(uintBitsToFloat(v)); vec2 h = unpack_h2(v); return swz == 2u ? h.xx : (swz == 3u ? h.yy : h); }\n"
     "uint hpack(vec2 r, uint merge, uint old) { if (merge == 1u) return floatBitsToUint(r.x); uint lo = packHalf2x16(vec2(r.x, 0.0f)), hi = packHalf2x16(vec2(r.y, 0.0f)); if (merge == 2u) return (old & 0xFFFF0000u) | lo; if (merge == 3u) return (old & 0xFFFFu) | (hi << 16); return lo | (hi << 16); }\n"
+    // doubles (DADD / DMUL / DFMA / ... and F64 conversions) in fp32: a register pair's bits to a float and back.
+    // Mobile GPUs have no shaderFloat64 (Adreno: none); the results keep fp32's 24-bit mantissa.
+    "float d2f(uint lo, uint hi) { uint s = hi & 0x80000000u; int e = int((hi >> 20) & 0x7FFu);"
+    " if (e == 0x7FF) return uintBitsToFloat(s | 0x7F800000u | ((((hi & 0xFFFFFu) | lo) != 0u) ? 0x400000u : 0u));"
+    " int fe = e - 896; if (fe >= 255) return uintBitsToFloat(s | 0x7F800000u); if (fe <= 0) return uintBitsToFloat(s);"
+    " return uintBitsToFloat(s | (uint(fe) << 23) | ((hi & 0xFFFFFu) << 3) | (lo >> 29)); }\n"
+    "uvec2 f2d(float f) { uint b = floatBitsToUint(f), s = b & 0x80000000u, e = (b >> 23) & 0xFFu, m = b & 0x7FFFFFu;"
+    " if (e == 0u) return uvec2(0u, s); if (e == 255u) return uvec2(0u, s | 0x7FF00000u | (m >> 3) | (m != 0u ? 0x80000u : 0u));"
+    " return uvec2(m << 29, s | ((e + 896u) << 20) | (m >> 3)); }\n"
     "uint prmt(uint a, uint b, uint sel) { uint r = 0u; for (uint i = 0u; i < 4u; i++) { uint s = (sel >> (i * 4u)) & 7u; uint bt = s < 4u ? (a >> (s * 8u)) & 0xFFu : (b >> ((s - 4u) * 8u)) & 0xFFu; r |= bt << (i * 8u); } return r; }\n";
 
 static const char *glsl_sampler_type(const ShaderTexture *t) {

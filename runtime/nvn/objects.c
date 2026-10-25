@@ -847,7 +847,17 @@ NVN(nvnTextureGetMemoryPool) { RET(0); }
 NVN(nvnTextureGetMemoryOffset) { RET(TEX->pool_offset); }
 NVN(nvnTextureGetStorageSize) { RET(tegra_total_size(&TEX->layout)); }
 NVN(nvnTextureGetDebugID) { RET(obj_debug_id(A(0))); }
-NVN(nvnTextureGetViewOffset) { RET(0); }
+// Where a view's first level and layer start in the texture's storage. TOTK's loader decompresses each mip of its
+// TexToGo files there: with 0 for every view, level 0 was all a texture ever held, and its mips read as zeros - in ASTC
+// an error block, magenta (the cave's rocks, and the cube map of the cave lighting everything magenta).
+NVN(nvnTextureGetViewOffset) {
+    const NvnTexture *t = TEX;
+    const NvnTextureView *v = AP(1);
+    uint32_t level = v && (v->setmask & 1) ? v->base_level : 0, layer = v && (v->setmask & 2) ? v->min_layer : 0;
+    uint64_t off = level < t->layout.levels ? tegra_level(&t->layout, level).offset : 0;
+    if (t->layout.depth <= 1) off += (uint64_t)layer * tegra_layer_size(&t->layout);  // (3D: slices are inside levels)
+    RET(off);
+}
 NVN(nvnTextureGetStorageClass) { RET(0); }
 NVN(nvnTextureGetRawStorageClass) { RET(0); }
 NVN(nvnTextureGetSparseTileLayout) { RET(0); }
@@ -882,22 +892,51 @@ NVN(nvnTextureViewGetTarget) { *(uint32_t *)AP(1) = TV->target; RET(!!(TV->setma
 NVN(nvnTextureViewCompare) { RET(memcmp(AP(0), AP(1), sizeof(NvnTextureView)) == 0); }
 // (From SavageWindRecomp, MIT; a smaller layout fits the older NVN versions too.)
 
-NVN(nvnTextureWriteTexels) {
-    // (texture, view, region, data) -- linear data into block-linear storage
+// WriteTexels / ReadTexels(texture, view, region, data[, row stride, image stride]): a region of one level between
+// linear memory and the texture's block-linear storage, as NVN does on the CPU. The region {x, y, z, width, height,
+// depth} is in texels of the view's level (its base level; level 0 without a view); z / depth are layers of an array
+// or cube texture (from the view's first layer), slices of a 3D one. Unstrided data is packed rows and images.
+// Only a whole level 0 was written before (partial writes and every read were logged and dropped): TOTK reads and
+// writes parts of textures from its first frames.
+bool renderer_is_gpu_owned(NvnTexture *t);
+static void texels_region(Cpu *c, bool to_linear, bool strided) {
     NvnTexture *t = HOST(NvnTexture, A(0));
-    const int32_t *r = AP(2);  // xoffset, yoffset, zoffset, width, height, depth
-    LevelLayout l = tegra_level(&t->layout, 0);
-    if (r && r[0] == 0 && r[1] == 0 && (uint32_t)r[3] == t->width && (uint32_t)r[4] == t->height) {
-        tegra_swizzle(AP(3), (uint8_t *)(uintptr_t)t->addr + l.offset, l.wb, l.hb, r[5] > 0 ? (uint32_t)r[5] : 1,
-                      t->layout.fmt->bpb, l.block_height_log2, l.block_depth_log2);
-        backend_pool_written(t->addr, tegra_total_size(&t->layout));
-    } else {
-        LOG("[nvn] partial WriteTexels not implemented\n");
+    const NvnTextureView *v = AP(1);
+    const int32_t *r = AP(2);
+    const FormatInfo *fi = t ? t->layout.fmt : NULL;
+    if (!t || !r || !fi || !fi->bpb || !A(3) || r[3] <= 0 || r[4] <= 0) return;
+    uint32_t level = v && (v->setmask & 1) ? v->base_level : 0, layer0 = v && (v->setmask & 2) ? v->min_layer : 0;
+    if (level >= t->layout.levels) return;
+    LevelLayout l = tegra_level(&t->layout, level);
+    uint32_t x0 = (uint32_t)r[0] / fi->bw, y0 = (uint32_t)r[1] / fi->bh;
+    uint32_t wb = ((uint32_t)r[3] + fi->bw - 1) / fi->bw, hb = ((uint32_t)r[4] + fi->bh - 1) / fi->bh;
+    uint32_t d = r[5] > 0 ? (uint32_t)r[5] : 1;
+    if (x0 + wb > l.wb || y0 + hb > l.hb) return;
+    uint64_t row = strided && A(4) ? A(4) : (uint64_t)wb * fi->bpb, img = strided && A(5) ? A(5) : row * hb;
+    uint8_t *lin = AP(3), *base = (uint8_t *)(uintptr_t)t->addr;
+    bool layers = t->layout.depth <= 1;  // (array / cube: one level slice per layer)
+    for (uint32_t k = 0; k < (layers ? d : 1); k++) {
+        uint64_t at = layers ? (uint64_t)(layer0 + (uint32_t)r[2] + k) * tegra_layer_size(&t->layout) : 0;
+        if (layers && layer0 + (uint32_t)r[2] + k >= (t->layout.layers ? t->layout.layers : 1)) break;
+        tegra_copy_region(base + at + l.offset, lin + k * img, row, img, &l, fi->bpb, x0, y0, layers ? 0 : (uint32_t)r[2],
+                          wb, hb, layers ? 1 : d, to_linear);
     }
+    if (!to_linear) backend_pool_written(t->addr, tegra_total_size(&t->layout));
+    if (nvn_watch_texaddr() && t->addr <= nvn_watch_texaddr() && nvn_watch_texaddr() < t->addr + tegra_total_size(&t->layout))
+        LOG("[watch] %s %ux%u fmt %#x level %u region %d,%d,%d %dx%dx%d, first bytes %02x %02x %02x %02x\n",
+            to_linear ? "ReadTexels" : "WriteTexels", t->width, t->height, t->format, level, r[0], r[1], r[2], r[3], r[4],
+            r[5], lin[0], lin[1], lin[2], lin[3]);
+    static int nlog, nlog_lv;  // (what the game does with these: CPU-written storage is all there is to read here - a
+                               // texture the GPU drew lives in a Vulkan image) (and the first 40 into a level past 0)
+    if (nlog++ < 8 || (level && nlog_lv++ < 40))
+        LOG("[nvn] %s %ux%u fmt %#x level %u region %d,%d,%d %dx%dx%d, first bytes %02x %02x %02x %02x%s\n",
+            to_linear ? "ReadTexels" : "WriteTexels", t->width, t->height, t->format, level, r[0], r[1], r[2], r[3], r[4],
+            r[5], lin[0], lin[1], lin[2], lin[3], renderer_is_gpu_owned(t) ? " (drawn by the GPU)" : "");
 }
-NVN(nvnTextureWriteTexelsStrided) { LOG("[nvn] WriteTexelsStrided not implemented\n"); (void)c; }
-NVN(nvnTextureReadTexels) { LOG("[nvn] ReadTexels not implemented\n"); (void)c; }
-NVN(nvnTextureReadTexelsStrided) { LOG("[nvn] ReadTexelsStrided not implemented\n"); (void)c; }
+NVN(nvnTextureWriteTexels) { texels_region(c, false, false); }
+NVN(nvnTextureWriteTexelsStrided) { texels_region(c, false, true); }
+NVN(nvnTextureReadTexels) { texels_region(c, true, false); }
+NVN(nvnTextureReadTexelsStrided) { texels_region(c, true, true); }
 
 // ================================================================== samplers
 // SamplerBuilder: the game's NVNsamplerBuilder is only 64 bytes in NVN 55 (BOTW 1.8.2 builds one on the stack

@@ -165,7 +165,7 @@ Visto no 7º boot e ainda não tratado:
   `nfp:user` (amiibo).
 - `audren`: os efeitos 2, 5 e 7 (não implementados no mixer) e *wave buffers* "fora da memória do guest" (os
   parâmetros de voz lidos num layout errado para a revisão do TOTK).
-- `[nvn] ReadTexels` e `WriteTexels` parcial: não implementados (o jogo os chama em série).
+- `[nvn] ReadTexels` e `WriteTexels` parcial: não implementados (o jogo os chama em série). (Feitos na Fase 5.)
 
 ### Fase 4: gráficos — **a tela título (2026-10-24)**
 
@@ -195,7 +195,7 @@ O 7º boot chegava à abertura e caía quando o jogo passava dela. O que faltava
 Falta:
 
 - O *device lost* no driver da Qualcomm.
-- `[nvn] ReadTexels` e `WriteTexels` parcial (o jogo os chama em série), `textureGather` em alguns tipos de textura.
+- `textureGather` em alguns tipos de textura (`ReadTexels` / `WriteTexels`: feitos na Fase 5).
 - A cena só ocupa 16:9 no meio da tela de 20:9 (widescreen: Fase 7).
 
 ### Fase 5: áudio, vídeos, saves, entrada — **em andamento**
@@ -207,10 +207,24 @@ Falta:
   `0x380000000000`). Conferido num dump real de uma atualização (`LARECOMP_AUDIO_DUMP=<pasta>`: ids, formatos ADPCM,
   taxas, wave buffers e ids de canal no lugar). Agora: "Nintendo apresenta", "Tears of the Kingdom", a abertura (as
   tochas na caverna sob o castelo) e o **Link controlável** no prólogo, com o HUD e as dicas em português, a ~20 fps.
-- O que se vê errado no jogo: as rochas e paredes da caverna em **magenta**. Suspeitos, pelo log: `ReadTexels` /
-  `WriteTexels` parcial (não implementados, 50 vezes cada), a memória global dos shaders sem importação ("no heap
-  import": as leituras voltam zero), um vertex shader com `DMUL` (`0x5C80...`, ponto flutuante duplo: o tradutor não
-  tem).
+- **A caverna em magenta — resolvido (2026-10-24).** Não eram os suspeitos do log: o `nvnTextureGetViewOffset` era
+  um stub que devolvia 0. O carregador do TOTK descomprime cada mip dos `TexToGo/*.txtg` (um quadro zstd por mip, já
+  em block-linear, cortado no último byte usado: o mip 3 de um BC5 128x128 tem 384 bytes, não 256) no deslocamento
+  que esse `GetViewOffset` dá para a vista daquele nível; com 0, só o nível 0 ficava na textura e os mips liam zero.
+  Em ASTC (os albedos do TOTK) um bloco zerado é bloco de erro: **magenta**. As rochas tinham a textura certa de perto
+  e magenta de longe, e o cubemap de ambiente que o jogo captura da própria caverna saía magenta e iluminava tudo de
+  magenta. O próprio jogo lia zeros: `ReadTexels` do nível 1 de uma textura BC4 1024x1024 para compor o terreno.
+  Como se achou (ferramentas que ficaram): `LARECOMP_DEBUG_FRAME` + `LARECOMP_DEBUG_DIR=/data/user/0/com.totkrecompandroid/files/dbg`
+  (os passes num lugar que o `run-as` lê: a pasta externa do app o shell do HyperOS não lê) e `LARECOMP_DEBUG_RT=<n>`
+  (o alvo de cor n do passe: o albedo do G-buffer é o 1), `LARECOMP_DUMP_FS=<hash>[,...]` (o GLSL),
+  `LARECOMP_LOG_CBUF=<hash>:<bancos>` + `LARECOMP_LOG_CBUF_FROM=<quadro>` (os bancos de constantes),
+  `LARECOMP_LOG_ASTC_ZERO=1` (níveis ASTC enviados com blocos zerados) e `LARECOMP_NO_ASTC=1` (decodifica ASTC na CPU:
+  separa dado inválido de decodificador).
+- Também nesta rodada: `ReadTexels` / `WriteTexels` (com e sem stride) de qualquer região, nível e camada
+  (`tegra_copy_region`), e as instruções de ponto flutuante duplo (`DADD`, `DMUL`, `DFMA`, `DMNMX`, `DSETP`, F64 em
+  `F2F` / `F2I` / `I2F`) emuladas em fp32 - o Adreno não tem `shaderFloat64`.
+- Vistos depois disso (a investigar): as **vozes** dos personagens mudas, o **corpo do Link se deformando** e
+  **piscadas** na imagem.
 - Muitas vozes vão por *splitters* (mix `0x7FFFFFFF` + splitter id), que o `audren` não implementa: esses sons ficam
   mudos.
 - **Opus:** o FFmpeg do app não tem o decodificador Opus (ele precisa do `libswresample`, que

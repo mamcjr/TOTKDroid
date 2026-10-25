@@ -40,3 +40,8 @@ void tegra_deswizzle(const uint8_t *src, uint8_t *dst, uint32_t wb, uint32_t hb,
                      uint32_t block_height_log2, uint32_t block_depth_log2);
 void tegra_swizzle(const uint8_t *src, uint8_t *dst, uint32_t wb, uint32_t hb, uint32_t d, uint32_t bpb,
                    uint32_t block_height_log2, uint32_t block_depth_log2);
+// A region of a level (blocks x0, y0, slice z0; wb x hb x d of them) between the level's block-linear storage `surface`
+// and linear memory `lin` (rows lin_row bytes apart, slices lin_slice): to_linear reads the surface, else writes it.
+void tegra_copy_region(uint8_t *surface, uint8_t *lin, uint64_t lin_row, uint64_t lin_slice, const LevelLayout *l,
+                       uint32_t bpb, uint32_t x0, uint32_t y0, uint32_t z0, uint32_t wb, uint32_t hb, uint32_t d,
+                       bool to_linear);

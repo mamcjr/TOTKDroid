@@ -395,9 +395,13 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     b->astc_bw = b->astc_bh = 0;
 #ifdef __ANDROID__
     b->bc_vf = VK_FORMAT_UNDEFINED;
-    static int no_bc = -1;  // LARECOMP_NO_BC=1 (a test): as a GPU without BC - the CPU decode on an Adreno
-    if (no_bc < 0) no_bc = getenv("LARECOMP_NO_BC") != NULL;
-    if (!format_supports(vf, need) || (no_bc && is_bc(vf))) {
+    static int no_bc = -1, no_astc;  // LARECOMP_NO_BC=1 / LARECOMP_NO_ASTC=1 (tests): as a GPU without BC / ASTC -
+    if (no_bc < 0) {                 // the CPU decode on an Adreno
+        no_bc = getenv("LARECOMP_NO_BC") != NULL;
+        no_astc = getenv("LARECOMP_NO_ASTC") != NULL;
+    }
+    if (!format_supports(vf, need) || (no_bc && is_bc(vf)) ||
+        (no_astc && vf >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && vf <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK)) {
 #else
     if (!format_supports(vf, need)) {
 #endif
@@ -890,6 +894,22 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
                     LOG("[tex] dump %d: %ux%ux%u fmt %#x bh %u bd %u linear %d at %llx -> %s\n", ndump, t->width, t->height,
                         t->depth, t->format, l.block_height_log2, l.block_depth_log2, linear, (unsigned long long)t->addr, p);
                     ndump++;
+                }
+            }
+            {   // LARECOMP_LOG_ASTC_ZERO=1 (diagnosis): ASTC levels uploaded with all-zero blocks, which decode to the
+                // error colour (magenta) - storage nothing filled (TOTK's mips, while nvnTextureGetViewOffset said 0)
+                static int lz = -1, nlz;
+                if (lz < 0) lz = getenv("LARECOMP_LOG_ASTC_ZERO") != NULL;
+                if (lz && t->format >= 0x79 && t->format <= 0x94 && layer == 0 && nlz < 400) {
+                    static const uint8_t z16[16];
+                    uint64_t n = (uint64_t)l.wb * l.hb * l.d, nz = 0;
+                    for (uint64_t i = 0; i < n; i++) nz += !memcmp(lin + i * 16, z16, 16);
+                    if (nz) {
+                        nlz++;
+                        LOG("[tex] astc zero blocks: %ux%u fmt %#x level %u/%u: %llu of %llu (at %llx, frame %llu)\n", t->width,
+                            t->height, t->format, lv, levels, (unsigned long long)nz, (unsigned long long)n,
+                            (unsigned long long)t->addr, (unsigned long long)renderer_present_count());
+                    }
                 }
             }
             if (b->tp > 0 && layer == 0) texpatch_apply(b->tp - 1, lv, lin, l.w, l.h, row);

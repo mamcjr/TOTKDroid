@@ -140,3 +140,26 @@ void tegra_swizzle(const uint8_t *src, uint8_t *dst, uint32_t wb, uint32_t hb, u
                    uint32_t bh_log2, uint32_t bd_log2) {
     copy_surface(src, dst, wb, hb, d, bpb, bh_log2, bd_log2, false);
 }
+
+// (block by block: a region needn't start on a 16-byte run. A block of 1, 2, 4, 8 or 16 bytes never crosses one;
+// other sizes go byte by byte.)
+void tegra_copy_region(uint8_t *surface, uint8_t *lin, uint64_t lin_row, uint64_t lin_slice, const LevelLayout *l,
+                       uint32_t bpb, uint32_t x0, uint32_t y0, uint32_t z0, uint32_t wb, uint32_t hb, uint32_t d,
+                       bool to_linear) {
+    uint32_t width_gobs = (l->wb * bpb + 63) / 64;
+    uint32_t gob_rows = 8u << l->block_height_log2;
+    uint64_t blocks_rows = (l->hb + gob_rows - 1) / gob_rows;
+    bool pow2 = !(bpb & (bpb - 1)) && bpb <= 16;
+    for (uint32_t z = 0; z < d; z++)
+        for (uint32_t y = 0; y < hb; y++)
+            for (uint32_t x = 0; x < wb; x++) {
+                uint8_t *p = lin + z * lin_slice + y * lin_row + (uint64_t)x * bpb;
+                for (uint32_t k = 0; k < bpb; k += pow2 ? bpb : 1) {
+                    uint64_t o = gob_offset((x0 + x) * bpb + k, y0 + y, z0 + z, width_gobs, l->block_height_log2,
+                                            l->block_depth_log2, blocks_rows);
+                    uint32_t n = pow2 ? bpb : 1;
+                    if (to_linear) memcpy(p + k, surface + o, n);
+                    else memcpy(surface + o, p + k, n);
+                }
+            }
+}

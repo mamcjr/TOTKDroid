@@ -1573,8 +1573,11 @@ static void vk_end_pass_at(int line) {
         static int multi = -1;
         if (multi < 0) multi = getenv("LARECOMP_DEBUG_FRAMES") != NULL;
         if (multi && renderer_present_count() != debug_pass_frame) { debug_pass_frame = renderer_present_count(); debug_pass_no = 0; }
-        if (multi) snprintf(path, sizeof path, "build/pass_%llu_%03d.png", (unsigned long long)debug_pass_frame, debug_pass_no++);
-        else snprintf(path, sizeof path, "build/pass_%03d.png", debug_pass_no++);
+        // (LARECOMP_DEBUG_DIR=<folder>: there instead of build/ - Android: the app's internal files, which run-as reads;
+        // its external folder is out of the shell's reach)
+        const char *dir = getenv("LARECOMP_DEBUG_DIR") ? getenv("LARECOMP_DEBUG_DIR") : "build";
+        if (multi) snprintf(path, sizeof path, "%s/pass_%llu_%03d.png", dir, (unsigned long long)debug_pass_frame, debug_pass_no++);
+        else snprintf(path, sizeof path, "%s/pass_%03d.png", dir, debug_pass_no++);
         TexBackend *b = pass_dump_b;
         pass_dump_b = NULL;
         extern uint32_t vk_dump_depth_layer;
@@ -1730,7 +1733,12 @@ static void begin_pass(void) {
                           .colorAttachmentCount = pass_ncolor, .pColorAttachments = ca,
                           .pDepthAttachment = has_d ? &da : NULL, .pStencilAttachment = has_s ? &sa : NULL};
     vkCmdBeginRendering(cb, &ri);
-    if (g_debug_frame) pass_dump_b = st.rt.ncolor && st.rt.color[0] ? st.rt.color[0]->backend : NULL;
+    if (g_debug_frame) {  // (LARECOMP_DEBUG_RT=<n>: the pass's color target n where it has one, else its first)
+        static int rt_i = -1;
+        if (rt_i < 0) rt_i = getenv("LARECOMP_DEBUG_RT") ? atoi(getenv("LARECOMP_DEBUG_RT")) & 7 : 0;
+        int i = rt_i < st.rt.ncolor && st.rt.color[rt_i] ? rt_i : 0;
+        pass_dump_b = st.rt.ncolor && st.rt.color[i] ? st.rt.color[i]->backend : NULL;
+    }
     pass_dump_layer = ~0u;
     if (g_debug_frame && !pass_dump_b && st.rt.depth && st.rt.depth->backend) {  // depth only (shadow maps)
         pass_dump_b = st.rt.depth->backend;
@@ -2167,13 +2175,21 @@ static void translate_program(void *arg) {
         return;
     }
 #ifdef __ANDROID__
-    {   // LARECOMP_DUMP_FS=<fs hash, as [gpuprof] / [fshash] print it>: that fragment shader's GLSL (and its vertex
-        // shader's) to build/fs_<hash>.glsl, for looking at a slow one
+    {   // LARECOMP_DUMP_FS=<fs hash, as [gpuprof] / [fshash] / [wdraw] print it>[,...]: those fragment shaders' GLSL
+        // (and their vertex shaders') to build/fs_<hash>.glsl (LARECOMP_DEBUG_DIR's folder if set), to look at
         const char *want = getenv("LARECOMP_DUMP_FS");
         uint64_t h = hmix(1469598103934665603ull, (const void *)(uintptr_t)(p->code[1] + 0x30), 0x200);
-        if (want && strtoull(want, NULL, 16) == h) {
-            char path[96];
-            snprintf(path, sizeof path, "build/fs_%016llx.glsl", (unsigned long long)h);
+        bool match = false;
+        for (const char *e = want; e && *e && !match;) {
+            char *end;
+            match = strtoull(e, &end, 16) == h;
+            if (*end != ',') break;
+            e = end + 1;
+        }
+        if (match) {
+            char path[1100];
+            snprintf(path, sizeof path, "%s/fs_%016llx.glsl", getenv("LARECOMP_DEBUG_DIR") ? getenv("LARECOMP_DEBUG_DIR") : "build",
+                     (unsigned long long)h);
             FILE *f = fopen(path, "wb");
             if (f) {
                 fprintf(f, "// fragment shader %016llx (code %llx)\n%s\n// ---- vertex shader (code %llx)\n%s\n",
@@ -3132,13 +3148,29 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     if (size > r.size && r.size) size = r.size;
     if (size < 16) size = 16;
     {   // LARECOMP_LOG_CBUF=<fs hash>: the first floats of the draws of that fragment shader get in cb3 (its stage's
-        // first game buffer), as copied - a race with the game's writes shows here without a debug frame's timing
+        // first game buffer), as copied - a race with the game's writes shows here without a debug frame's timing.
+        // <fs hash>:<bank>[,<bank>...]: all of those banks (cb<bank> in the GLSL), row by row, for its first 16 draws
         static uint64_t want = ~0ull;
-        if (want == ~0ull) want = getenv("LARECOMP_LOG_CBUF") ? strtoull(getenv("LARECOMP_LOG_CBUF"), NULL, 16) : 0;
-        if (want && g_cur_fs_hash == want && k == 3 && stage != 0) {
+        static uint32_t want_k = 1u << 3;
+        static int nbank;
+        static uint64_t cbuf_from;
+        if (want == ~0ull) {
+            const char *e = getenv("LARECOMP_LOG_CBUF");
+            cbuf_from = getenv("LARECOMP_LOG_CBUF_FROM") ? strtoull(getenv("LARECOMP_LOG_CBUF_FROM"), NULL, 10) : 0;
+            char *end = NULL;
+            want = e ? strtoull(e, &end, 16) : 0;
+            if (end && *end == ':')
+                for (want_k = 0; *end == ':' || *end == ',';) want_k |= 1u << (strtoul(end + 1, &end, 10) & 31);
+        }
+        if (want && g_cur_fs_hash == want && (want_k >> k & 1) && stage != 0) {
             const float *f = (const float *)(uintptr_t)r.addr;
-            LOG("[cbuf] %llx: %.3f %.3f %.3f %.3f + %.3f %.3f %.3f %.3f\n", (unsigned long long)r.addr, f[0], f[1], f[2],
-                f[3], f[4], f[5], f[6], f[7]);
+            if (want_k == 1u << 3)
+                LOG("[cbuf] %llx: %.3f %.3f %.3f %.3f + %.3f %.3f %.3f %.3f\n", (unsigned long long)r.addr, f[0], f[1], f[2],
+                    f[3], f[4], f[5], f[6], f[7]);
+            else if (renderer_present_count() >= cbuf_from && nbank++ < 16)  // (from frame LARECOMP_LOG_CBUF_FROM)
+                for (uint64_t i = 0; i < size / 16 && i < 64; i++)
+                    LOG("[cbuf] frame %llu cb%d[%llu] %g %g %g %g\n", (unsigned long long)renderer_present_count(), k,
+                        (unsigned long long)i, f[4 * i], f[4 * i + 1], f[4 * i + 2], f[4 * i + 3]);
         }
     }
 #ifdef __ANDROID__
@@ -4573,6 +4605,16 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     }
     CsProg *cp = compute_program(st.program);
     if (!cp || atomic_load(&cp->p.state) != 1) { stat_skipped++; return; }
+    {   extern uint64_t nvn_watch_texaddr(void);  // (and the images it stores to)
+        uint64_t wa = nvn_watch_texaddr();
+        for (int i = 0; wa && i < cp->si->ntex; i++) {
+            NvnTexture *t = cp->si->tex[i].is_image ? shader_texture_object(5, &cp->si->tex[i]) : NULL;
+            if (t && t->addr <= wa && wa < t->addr + tegra_total_size(&t->layout))
+                LOG("[watch] frame %llu: dispatch %ux%ux%u cs %llx, image %d %ux%ux%u f%#x at %llx\n",
+                    (unsigned long long)renderer_present_count(), gx, gy, gz, (unsigned long long)st.program->stages[5].code_addr,
+                    i, t->width, t->height, t->depth, t->format, (unsigned long long)t->addr);
+        }
+    }
     {   // LARECOMP_SKIP_CS=<code address hex>[,...] (debug): skip those compute shaders' dispatches, to see what they do;
         // "store": every one that stores to global memory
         static uint64_t skip[16];
