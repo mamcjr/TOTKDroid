@@ -18,24 +18,24 @@ TITLE_IDS = {'0100F2C0115B6000': 'The Legend of Zelda: Tears of the Kingdom'}
 
 # build id of main (first 16 hex digits) -> game version (the generator and the patches are tied to one exact build)
 VERSIONS = {
-    '5cb42b1cf25469fb': '1.4.2',  # TOTK + the update 0100F2C0115B6800 v655360 (SDK 20.5.6)
+    '277178b7dba1b6d4': '1.4.3',  # TOTK + the update 0100F2C0115B6800 v720896 (SDK 20.5.22; 1.4.2 dropped)
 }
-TARGET = '1.4.2'
+TARGET = '1.4.3'
 
 # what each module is (its own build paths, the SDK tags in it and the NEEDED list of main), and how it's treated
 MODULES = [
     ('main', "the game (EX-King.nss): EPD's engine after BOTW's (sead, agl, gsys), Havok 2022.1 (AI, Animation, "
      'Cloth), NintendoWare (G3d2, Vfx2, Ui2d, Font)', 'recompiled'),
-    ('sdk', "nnSdk 20.5.6: the Nintendo SDK with NVN and display (vi) inside - the very file of BOTW 1.8.2's",
+    ('sdk', "nnSdk 20.5.22: the Nintendo SDK with NVN and display (vi) inside - BOTW 1.8.2's line (20.5.6 there)",
      'recompiled, services HLE, NVN by name (nvnBootstrapLoader: runtime/nvn)'),
-    ('subsdk0', "multimedia.nss: movie playback (nn::movie) - BOTW 1.8.2's too", 'HLE: FFmpeg (runtime/hle/movie.c)'),
+    ('subsdk0', 'multimedia.nss: movie playback (nn::movie), SDK 20.5.22', 'HLE: FFmpeg (runtime/hle/movie.c)'),
     ('rtld', 'the dynamic loader', 'not used: runtime/loader.c'),
 ]
 
 # the romfs: Zstandard-compressed files (.zs; the dictionaries in Pack/ZsDic.pack.zs), the boot pack, the messages of
 # each language (Mals/), the resource size table of this version
 ROMFS_FILES = ['Pack/ZsDic.pack.zs', 'Pack/Bootup.Nin_NX_NVN.pack.zs', 'Mals/USen.Product.142.sarc.zs',
-               'System/Resource/ResourceSizeTable.Product.142.Nin_NX_NVN.rsizetable.zs']
+               'System/Resource/ResourceSizeTable.Product.143.Nin_NX_NVN.rsizetable.zs']  # (1.4.3: messages still .142)
 
 
 def find_dump():

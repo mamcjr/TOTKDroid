@@ -56,16 +56,14 @@ extern uint64_t g_guest_lo;
 #endif
 
 // ---- loader.c
-// The game's version, from main's build id (loader_load): GAME_V_142 for Tears of the Kingdom 1.4.2, 0 unknown. What
+// The game's version, from main's build id (loader_load): GAME_V_143 for Tears of the Kingdom 1.4.3, 0 unknown. What
 // differs by version in the runtime keys on this. (The checks for 100 / 160 / 182 are BOTW's 1.0.0, 1.6.0 and 1.8.2,
-// where the engine came from: 1.8.2 taught it SDK 20 and NVN 55. TOTK 1.4.2's sdk and multimedia modules are the
-// very same files as BOTW 1.8.2's, SDK 20.5.6 with NVN 55.15: only main differs.)
+// where the engine came from: 1.8.2 taught it SDK 20 and NVN 55. TOTK 1.4.2's sdk and multimedia modules were the
+// very same files as BOTW 1.8.2's, SDK 20.5.6; 1.4.3's are SDK 20.5.22, the same line.)
 // (GAME_V_*, game_version_of_build, game_version_name: runtime/paths.h)
 extern int g_game_version;
-// SDK 20 (BOTW 1.8.2, TOTK 1.4.2; 1.4.3's 20.5.22): NVN 55's device info, timed-out condition variable waits
-static inline int game_new_sdk(void) {
-    return g_game_version == 182 || g_game_version == GAME_V_142 || g_game_version == GAME_V_143;
-}
+// SDK 20 (BOTW 1.8.2; TOTK 1.4.3's 20.5.22): NVN 55's device info, timed-out condition variable waits
+static inline int game_new_sdk(void) { return g_game_version == 182 || g_game_version == GAME_V_143; }
 // The program id, from main.npdm (runtime/main.c boot; TOTK's until then): GetInfo, the add-on content base id
 extern uint64_t g_program_id;
 // The system resource size, from main.npdm (0 for BOTW, 24 MiB for TOTK): GetInfo 16. Non-zero, the SDK turns its

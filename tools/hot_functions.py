@@ -2,7 +2,7 @@
 """The game functions play sessions entered, for the hot/cold game code build (runtime/gamebuild.c, Android;
 LASRecompAndroid's, per game version here).
 
-Collect on the phone (counts from process start, the file rewritten every 1800 frames while playing), e.g. for 1.4.2:
+Collect on the phone (counts from process start, the file rewritten every 1800 frames while playing), e.g. for 1.4.3:
   bash android/run_boot.sh 3600 \\
     'LARECOMP_FNPROF=0:999999999,LARECOMP_FNPROF_EVERY=1800,LARECOMP_FNPROF_OUT=/sdcard/Android/data/com.totkrecompandroid/files/build/fnprof.txt'
 play through as many places as possible, then
@@ -25,7 +25,7 @@ NAMED_MAIN = 0x7000000000
 p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 p.add_argument('sessions', nargs='+', type=Path, help='fnprof.txt files (runtime/fnprof.c)')
 p.add_argument('-o', '--out', type=Path, help='the list (default: tools/hot_functions_<version>.txt)')
-p.add_argument('--version', type=int, help="the game version of inputs that don't name one (142: TOTK 1.4.2)")
+p.add_argument('--version', type=int, help="the game version of inputs that don't name one (143: TOTK 1.4.3)")
 p.add_argument('--min-count', type=int, default=1, help='entries a function needs, summed over the sessions')
 args = p.parse_args()
 

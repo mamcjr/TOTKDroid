@@ -1,6 +1,6 @@
 #!/bin/bash
 # android/run_ver.sh <v<version>> [seconds] [LARECOMP_X=1,...]: android/run_boot.sh for another version of the game, kept
-# beside the main one, 1.4.2 (none yet: BOTWRecompAndroid ran 1.6.0 / 1.8.2 so) - its files in
+# beside the main one, 1.4.3 (none yet: BOTWRecompAndroid ran 1.6.0 / 1.8.2 so) - its files in
 # <external files>/<version>/extracted (android/push_game.sh with GAME_DEST and
 # GAMELIB_OUT=android/out/<version>), its game code copied into the app's internal storage, since Android loads no code
 # from external storage, and both handed to the runtime (LARECOMP_DATA_ROOT, LARECOMP_GAME_LIB). Saves and settings live

@@ -631,7 +631,7 @@ static uint32_t svc_wait_process_wide_key(uint64_t mutex, uint64_t key, uint32_t
     t->wait_tag = tag;
     __atomic_store_n(u32p(key), 1, __ATOMIC_SEQ_CST);
     uint32_t r = block_current(timeout);
-    // A wait that timed out returns without the mutex in BOTW 1.8.2's SDK (TOTK 1.4.2's is the same), as on the
+    // A wait that timed out returns without the mutex in BOTW 1.8.2's SDK (TOTK's SDK 20.5 too), as on the
     // console: user mode takes it again (InternalConditionVariableImplByHorizon::TimedWait calls Enter on 0xea01). Taken
     // here too, the thread then waited for the mutex it held, and every thread after it
     // (SavageWindRecomp). The older SDKs run as before.

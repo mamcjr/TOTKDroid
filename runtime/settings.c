@@ -53,7 +53,7 @@ Settings g_settings = {
 // The game's own text languages: its RomFS carries one message archive per region and language (Mals/USen, USes,
 // USfr, USpt, EUen, EUde, EUes, EUfr, EUit, EUnl, EUru, JPja, KRko, CNzh, TWzh: .Product.142.sarc.zs), and the game
 // picks one from the system language it reads back (runtime/services/am.c), exactly as it does on the console. Codes as
-// the Switch reports them. TOTK 1.4.2 has all of them, Brazilian Portuguese (USpt) included.
+// the Switch reports them. TOTK has all of them, Brazilian Portuguese (USpt) included.
 const char *const g_language_codes[N_LANGUAGES] = {"auto", "ja", "en-US", "es", "fr", "de", "it", "nl", "ru", "ko",
                                                    "zh-CN", "zh-TW", "pt-BR"};
 const char *const g_language_names[N_LANGUAGES] = {"Auto", "Japanese", "English", "Spanish", "French", "German",

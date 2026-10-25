@@ -1,6 +1,6 @@
 // Start screen, shown before the game boots (from LAS Recomp's, styled after Dusklight's launcher): PLAY, SETTINGS,
 // QUIT, game-files status at the lower left. Nothing of the game ships with TOTKRecompAndroid: on first launch the user picks
-// the folder with their own game files (Tears of the Kingdom 1.4.2), we tell the version by the main module's build id,
+// the folder with their own game files (Tears of the Kingdom 1.4.3), we tell the version by the main module's build id,
 // copy the files into that version's folder (runtime/paths.h) and build the game's data image; PLAY stays disabled
 // until that worked. A version set up beside the one running becomes the one played: the app starts again in its
 // folder (Game Files page / Settings > Prelaunch: the versions set up, to switch between). The background uses the
@@ -173,7 +173,7 @@ static bool file_exists(const std::string &p) {
     return stat(p.c_str(), &st) == 0;
 }
 
-// The game version of a main module (game_version_of_build: GAME_V_142; 0 another one), -1 when it isn't there
+// The game version of a main module (game_version_of_build: GAME_V_143; 0 another one), -1 when it isn't there
 static int main_version(const std::string &main_path) {
     FILE *f = fopen(main_path.c_str(), "rb");
     if (!f) return -1;
@@ -191,7 +191,7 @@ static const char *version_name(int v) { return game_version_name(v); }
 static std::string check_copied_files(const std::string &root) {
     int v = main_version(root + "/exefs/main"), want = rt_game_dir_version(root.c_str());
     if (v < 0) return "No game files";
-    if (!v || (want && v != want)) return "Wrong game version (needs v1.4.2)";
+    if (!v || (want && v != want)) return "Wrong game version (needs v1.4.3)";
     // (the game reads its data through romfs.bin alone: on Android it's built straight from the picked folder, and romfs/
     // holds only the movies, opened by path)
     if (!file_exists(root + "/romfs.bin")) return "Game data missing";
@@ -269,7 +269,7 @@ static void set_failure(int k) {
         "Choose the folder that holds the game files.",
         "Choose the folder that holds the game files.",
         "Make sure there's about 40 GB free and try again.",
-        "TOTKRecompAndroid runs The Legend of Zelda: Tears of the Kingdom with its update 1.4.2.",
+        "TOTKRecompAndroid runs The Legend of Zelda: Tears of the Kingdom with its update 1.4.3.",
         "Some files are missing. Choose the folder again; if it happens again, dump the game again.",
         "Make sure there's about 2 GB free and try again. If it keeps happening, report it on GitHub."};
     if (k >= 1 && k <= 6) set_job(head[k], true, hint[k]);
@@ -1110,7 +1110,7 @@ static void switch_to_version(int v) {
 // the ones not set up yet greyed - the files folder below sets them up. focus: the running one takes the cursor.
 static void version_rows(bool busy, bool focus) {
     static const char *const notes[N_VERSIONS] = {
-        "The game with its update 1.4.2, the last one."};
+        "The game with its update 1.4.3, the last one."};
     opt_section("Game version");
     int cur = rt_game_version();
     for (int i = 0; i < N_VERSIONS; i++) {
@@ -1271,7 +1271,7 @@ static void prelaunch_tab(float sc) {
     heading("Game files");
     ImGui::Text(tr("Game version: %s"), version_name(rt_game_version()));
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("%s", tr("Tears of the Kingdom 1.4.2 (the game with its last update)."));
+    ImGui::TextDisabled("%s", tr("Tears of the Kingdom 1.4.3 (the game with its last update)."));
     ImGui::PopTextWrapPos();
     if (ImGui::Button(tr("Versions and setup"))) g_open_files = true;
     static double gb = -1;
@@ -1781,7 +1781,7 @@ extern "C" void launcher_run(const char *root) {
                     dl->AddLine(ImVec2(x + u * 0.35f, cy + u * 0.35f), ImVec2(x + u, cy - u * 0.4f), g, fs * 0.11f);
                 };
                 std::string src_d = tr("The folder with your own game folders (exefs/romfs) of The Legend of Zelda: Tears of "
-                                       "the Kingdom for Nintendo Switch, with its update 1.4.2 applied. The version is told from "
+                                       "the Kingdom for Nintendo Switch, with its update 1.4.3 applied. The version is told from "
                                        "the files, and each one is set up in a place of its own, beside the others. The game "
                                        "isn't included with TOTKRecompAndroid.");
                 if (!src.empty()) src_d += std::string(tr("\n\nChosen: ")) + src;
