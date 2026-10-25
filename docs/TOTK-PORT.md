@@ -223,15 +223,25 @@ Falta:
 - Também nesta rodada: `ReadTexels` / `WriteTexels` (com e sem stride) de qualquer região, nível e camada
   (`tegra_copy_region`), e as instruções de ponto flutuante duplo (`DADD`, `DMUL`, `DFMA`, `DMNMX`, `DSETP`, F64 em
   `F2F` / `F2I` / `I2F`) emuladas em fp32 - o Adreno não tem `shaderFloat64`.
-- Vistos depois disso (a investigar): as **vozes** dos personagens mudas, o **corpo do Link se deformando** e
-  **piscadas** na imagem.
-- Muitas vozes vão por *splitters* (mix `0x7FFFFFFF` + splitter id), que o `audren` não implementa: esses sons ficam
-  mudos.
-- **Opus:** o FFmpeg do app não tem o decodificador Opus (ele precisa do `libswresample`, que
-  `android/deps/build_ffmpeg.sh` deixa de fora). O `hwopus` devolve silêncio do tamanho de cada pacote (pelo byte TOC);
-  um decodificador que não abria fazia o jogo abortar na tela título. Para ter o som: compilar o FFmpeg com o
-  swresample - mas o `android/deps/out` é o do LASRecompAndroid (junction), compartilhado com o LAS e o BOTW.
-- Efeitos de áudio 2, 5 e 7 e os *splitter destinations* do `audren`: não implementados.
+- Vistos depois disso (a investigar): as **vozes** dos personagens mudas (resolvido, abaixo), o **corpo do Link se
+  deformando** e **piscadas** na imagem.
+- **As vozes - resolvido (2026-10-25).** Eram duas coisas:
+  - **Opus:** o FFmpeg do app não tinha o decodificador (ele precisa do `libswresample`, que o
+    `android/deps/build_ffmpeg.sh` deixava de fora) e o `hwopus` devolvia silêncio. Agora o script compila o FFmpeg
+    com o swresample numa pasta só do TOTK, `android/deps/ffmpeg` (o `android/deps/out` é o do LASRecompAndroid, uma
+    junction: um `libavcodec` que pede o `libswresample` lá impediria os apps do LAS e do BOTW de carregar), e o
+    CMake / Gradle a preferem quando existe. As falas são Opus mono a 48 kHz; o ambiente da caverna, 6 canais Opus.
+  - **Splitters:** a maior parte dos sons do TOTK vai por *splitters* (a voz com mix `0x7FFFFFFF` e um splitter id;
+    o "não usado" do mix é `0x7FFFFFFF`, não negativo, e o aviso que existia nunca disparava): o `audren` os
+    descartava. Agora cada canal c da voz vai aos destinos c, c + canais, ... do splitter, cada um ao seu mix com os
+    seus volumes (e os sub mixes por splitter, o destino k levando o buffer k % buffers). O layout da REV15, visto nos
+    dumps (`LARECOMP_AUDIO_DUMP` grava as primeiras atualizações que mudam splitters, `audren_split_<n>.bin`): `SNDI`
+    {id, taxa, n, n ids} + 12 bytes; `SNDD` de 0xA8 bytes (os biquads float antes) com `is_used` em 0x9C. Música e
+    ambiente vêm em pares de vozes ADPCM mono meio / lado (volumes (a, a) e (b, -b)) para os mixes 3, 4 e 5.
+  - Conferido sem ouvir: `LARECOMP_OPUS_RAW=<pasta>` grava o que cada decodificador Opus decodificou e
+    `LARECOMP_AUDIO_WAV=<arquivo>` a mixagem final; a fala está na mixagem com correlação 0,995 (antes 0,10), e
+    `LARECOMP_LOG_OPUS=1` mostra o pico de um em cada 200 pacotes.
+- Efeitos de áudio 2 (aux), 5 e 7 do `audren`: não implementados.
 
 ### Fase 6: Android
 
