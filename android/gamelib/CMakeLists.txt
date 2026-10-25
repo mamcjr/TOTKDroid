@@ -25,6 +25,10 @@ set_target_properties(main PROPERTIES IMPORTED_LOCATION ${LAS_LIBMAIN} IMPORTED_
 add_library(totkgame SHARED ${GEN_SRC} ${R}/tools/gamelib_entry.c)
 target_include_directories(totkgame PRIVATE ${R}/runtime)
 target_compile_options(totkgame PRIVATE ${GAMELIB_FLAGS})
+# The instruction schedulers' dependency graph of huge runs of stores is quadratic: capped (LASRecomp-Android-Plus's
+# measurement, main_012.c 4.3 s -> 0.7 s, objects byte-identical but for 6 of 812). Outside GAMELIB_FLAGS, which the
+# game code id hashes: a build made before stays valid.
+target_compile_options(totkgame PRIVATE -mllvm -dag-maps-huge-region=500)
 set_source_files_properties(${R}/tools/gamelib_entry.c PROPERTIES COMPILE_DEFINITIONS "GAMELIB_ID=\"${GAMELIB_ID}\"")
 # Files with a gigantic function (heavy.txt, android/build_gamelib.sh: over 15,000 labels - a jump table's function
 # gets one per instruction) at -O0: clang spent hours on each at -O1 / -O2 (v1.6.0), seconds at -O0
