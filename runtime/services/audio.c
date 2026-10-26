@@ -16,8 +16,8 @@
 // Voices decode PCM16 / ADPCM wave buffers, resample to 48 kHz, and mix into their destination mix's
 // buffers; sub mixes route into their destination; the final mix feeds the device sink, which we
 // downmix to stereo and push to an SDL audio stream. Voices and sub mixes can go through a splitter instead (to
-// several mixes, each with its own volumes: TOTK's voices and much of its sound). Effects other than reverb are not
-// implemented.
+// several mixes, each with its own volumes: TOTK's voices and much of its sound). Effects other than reverb and the
+// limiter are not implemented.
 #define WB_COUNT 4
 #define MIXBUF_MAX 24
 #define HIST 4
@@ -103,11 +103,21 @@ typedef struct {
     SDL_AudioStream *stream;
     FILE *wav;
     uint32_t wav_bytes;
+    uint32_t clip_frames, clipped;  // (the output's samples past full scale: render_frame)
+    float peak;
     pthread_t thread;
     volatile bool quit;  // reboot (audio_reset)
 } Renderer;
 
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
+// The output's last stage: unchanged up to 0.9 of full scale, then a knee that reaches 1 only in the limit. The game's
+// limiter holds each of its 6 channels at 0.708, but the downmix to stereo adds up to 1.89 of that (TOTK: peaks of
+// 1.1 a few times a minute, 2026-10-26), which the clamp cut hard.
+static float soft_clip(float x) {
+    float a = fabsf(x);
+    if (!(a > 0.9f)) return a == a ? x : 0;  // (NaN: silence)
+    return copysignf(0.9f + 0.1f * tanhf((a - 0.9f) * 10), x);
+}
 
 // One sample of DSP ADPCM at absolute sample index s (frames of 8 bytes: header + 14 nibbles).
 static int16_t adpcm_next(const uint8_t *data, uint64_t size, uint32_t s, const int16_t *coefs, ChanState *cs) {
@@ -330,21 +340,43 @@ static void update_splitters(Renderer *r, const uint8_t *p, const uint8_t *end) 
                 LOG("[audren] splitter %u: %u destinations (first %u)\n", id, n, s->ids[0]);
         }
         p += 0x10 + 4ull * n;
-        for (int k = 0; k < 16 && p + 4 <= end && *(const uint32_t *)p != 0x49444E53 && *(const uint32_t *)p != 0x44444E53; k++)
-            p += 4;
+        // REV15's entries end with 12 more bytes the game leaves as they were: once they held an old 'SNDD' header
+        // and the name "Main", and the destinations were read from there, 12 bytes off - a volume of 1.8e28 from the
+        // text (TOTK, the output went to 1e27 x full scale, 2026-10-26). A magic 12 bytes on wins over one right here.
+        const uint32_t *w12 = p + 16 <= end ? (const uint32_t *)(p + 12) : NULL;
+        if (w12 && (*w12 == 0x49444E53 || *w12 == 0x44444E53)) p += 12;
+        else
+            for (int k = 0; k < 16 && p + 4 <= end && *(const uint32_t *)p != 0x49444E53 && *(const uint32_t *)p != 0x44444E53; k++)
+                p += 4;
     }
-    static uint32_t stride;  // (kept: an update with one destination doesn't show it)
-    for (uint32_t s = 0x70; nd > 1 && s < 0x100; s += 4)
-        if (p + s + 4 <= end && *(const uint32_t *)(p + s) == 0x44444E53) { stride = s; break; }
-    if (nd == 1 && !stride) stride = (uint32_t)(end - p);
-    if (stride < 0x70 || stride >= 0x100) return;
+    static uint32_t stride;  // (kept: an update with one destination doesn't show it; only the known sizes)
+    static const uint32_t sizes[] = {0x70, 0x90, 0xA8};
+    for (int k = 0; nd > 1 && k < 3; k++)
+        if (p + sizes[k] + 4 <= end && *(const uint32_t *)(p + sizes[k]) == 0x44444E53) { stride = sizes[k]; break; }
+    if (nd == 1 && !stride)
+        for (int k = 0; k < 3; k++) if ((uint32_t)(end - p) == sizes[k]) stride = sizes[k];
+    if (!stride) return;
     uint32_t used_at = stride == 0x70 ? 0x6C : stride - 12;
     for (uint32_t i = 0; i < nd && p + stride <= end && *(const uint32_t *)p == 0x44444E53; i++, p += stride) {
         uint32_t id;
         memcpy(&id, p + 4, 4);
         if (id >= r->dests) continue;
         SplitDest *d = &r->dest[id];
-        memcpy(d->vol, p + 8, sizeof d->vol);
+        float vol[MIXBUF_MAX];
+        memcpy(vol, p + 8, sizeof vol);
+        bool odd = false;  // (a volume no mix would use: not a destination after all - kept as it was, the first 4 logged)
+        for (int b = 0; b < MIXBUF_MAX; b++) odd |= !(fabsf(vol[b]) < 64);
+        if (odd) {
+            static int nodd;
+            if (nodd++ < 4) {
+                LOG("[audren] f%llu splitter destination %u (stride %#x, %u in this update) skipped:",
+                    (unsigned long long)r->elapsed_frames, id, stride, nd);
+                for (uint32_t k = 0; k < 0x10; k += 4) LOG(" %08x", *(const uint32_t *)(p + k));
+                LOG("\n");
+            }
+            continue;
+        }
+        memcpy(d->vol, vol, sizeof d->vol);
         memcpy(&d->mix, p + 0x68, 4);
         if (p[used_at] && !d->used) memcpy(d->prev, d->vol, sizeof d->prev);
         d->used = p[used_at];
@@ -527,20 +559,84 @@ static void reverb_process(Reverb *rv, float *const *in, float *const *out, uint
     }
 }
 
+// ------------------------------------------------------------------ limiter (port of Ryujinx LimiterCommandVersion1)
+// TOTK puts one on its final mix (6 channels at 0.708 of full scale, instant attack, 2 ms release), with sends above 1
+// into its sub mixes (splitter volumes up to 1.8): without it the loud moments went past full scale and were clipped.
+typedef struct {
+    uint8_t input[6], output[6];
+    uint16_t ch_max, ch;
+    int32_t sample_rate, look_ahead_max, attack_time, release_time, look_ahead;  // (times in microseconds)
+    float attack_coef, release_coef, threshold, input_gain, output_gain;
+    int32_t delay_min, delay_max;  // the look-ahead delay: wraps at min, max per channel
+} LimiterParam;
+
+typedef struct {
+    int ready;
+    LimiterParam p;
+    float detector[6], gain[6];  // the moving averages of the level and of the gain
+    float *delay;                // ch x delay_max
+    int32_t pos[6];
+} Limiter;
+
+static void limiter_update(Limiter *lm, const uint8_t *d, bool is_new) {
+    LimiterParam p;
+    memcpy(&p, d, sizeof p);
+    if ((p.ch != 1 && p.ch != 2 && p.ch != 4 && p.ch != 6) || p.ch > p.ch_max || p.delay_min <= 0 ||
+        p.delay_max < p.delay_min || p.delay_max > 48000) {
+        lm->ready = 0;
+        return;
+    }
+    if (is_new || !lm->ready || p.ch != lm->p.ch || p.delay_max != lm->p.delay_max) {
+        free(lm->delay);
+        lm->delay = calloc((size_t)p.ch * p.delay_max, sizeof(float));
+        for (int c = 0; c < 6; c++) lm->detector[c] = 0, lm->gain[c] = 1, lm->pos[c] = 0;
+        lm->ready = lm->delay != NULL;
+        static int logged;
+        if (logged++ < 4)
+            LOG("[audren] limiter: ch %u rate %d attack %d us release %d us look-ahead %d us (%d..%d samples) coefficients "
+                "%.4f/%.4f threshold %.3f gains %.3f/%.3f\n", p.ch, p.sample_rate, p.attack_time, p.release_time,
+                p.look_ahead, p.delay_min, p.delay_max, p.attack_coef, p.release_coef, p.threshold, p.input_gain,
+                p.output_gain);
+    }
+    lm->p = p;
+    for (int c = 0; c < p.ch; c++) if (lm->pos[c] >= p.delay_min) lm->pos[c] = 0;
+}
+
+static void limiter_process(Limiter *lm, float *const *in, float *const *out, uint32_t n) {
+    const LimiterParam *p = &lm->p;
+    for (int c = 0; c < p->ch; c++) {
+        float *dl = lm->delay + (size_t)c * p->delay_max, det = lm->detector[c], g = lm->gain[c];
+        int32_t pos = lm->pos[c];
+        for (uint32_t s = 0; s < n; s++) {
+            float x = in[c][s] / 32767.0f * p->input_gain, ax = fabsf(x);
+            det += (ax > det ? p->attack_coef : p->release_coef) * (ax - det);
+            float att = det > p->threshold ? p->threshold / det : 1.0f;
+            g += (g > att ? p->attack_coef : p->release_coef) * (att - g);
+            float y = dl[pos] * g * p->output_gain;
+            dl[pos] = x;
+            if (++pos >= p->delay_min) pos = 0;
+            out[c][s] = y * 32767.0f;
+        }
+        lm->detector[c] = det, lm->gain[c] = g, lm->pos[c] = pos;
+    }
+}
+
 struct Effect {
     uint8_t type, enabled;
     int32_t mix_id;
     uint32_t order;
     Reverb rv;
+    Limiter lm;
 };
 
 // Effect slot update from EffectInParameterVersion1 (0xC0 bytes: type, is_new, enabled, mix, buffers, order, data).
 static void effect_update(Effect *fx, const uint8_t *e) {
-    if (fx->type != e[0]) memset(&fx->rv.p, 0, sizeof fx->rv.p), fx->rv.ready = 0;
+    if (fx->type != e[0]) memset(&fx->rv.p, 0, sizeof fx->rv.p), fx->rv.ready = 0, fx->lm.ready = 0;
     fx->type = e[0];
     fx->enabled = e[2];
     memcpy(&fx->mix_id, e + 4, 4);
     memcpy(&fx->order, e + 0x18, 4);
+    if (fx->type == 7) { limiter_update(&fx->lm, e + 0x20, e[1]); return; }
     if (fx->type != 4) return;
     const uint8_t *d = e + 0x20;
     uint16_t ch_max, ch;
@@ -569,16 +665,27 @@ static void apply_effects(Renderer *r, int32_t mix_id, Mix *m) {
     for (uint32_t order = 0; order < r->effects; order++) {
         for (uint32_t i = 0; i < r->effects; i++) {
             Effect *fx = &r->fx[i];
-            if (fx->type != 4 || fx->mix_id != mix_id || fx->order != order || !fx->rv.ready) continue;
-            int ch = fx->rv.p.ch;
+            if (fx->mix_id != mix_id || fx->order != order) continue;
+            bool lim = fx->type == 7;
+            if (lim ? !fx->lm.ready : fx->type != 4 || !fx->rv.ready) continue;
+            int ch = lim ? fx->lm.p.ch : fx->rv.p.ch;
+            const uint8_t *ins = lim ? fx->lm.p.input : fx->rv.p.input, *outs = lim ? fx->lm.p.output : fx->rv.p.output;
             float *in[6], *out[6];
             int ok = 1;
             for (int c = 0; c < ch; c++) {
-                if (fx->rv.p.input[c] >= m->bufs || fx->rv.p.output[c] >= m->bufs) ok = 0;
-                in[c] = m->buf + (fx->rv.p.input[c] % MIXBUF_MAX) * N;
-                out[c] = m->buf + (fx->rv.p.output[c] % MIXBUF_MAX) * N;
+                if (ins[c] >= m->bufs || outs[c] >= m->bufs) ok = 0;
+                in[c] = m->buf + (ins[c] % MIXBUF_MAX) * N;
+                out[c] = m->buf + (outs[c] % MIXBUF_MAX) * N;
             }
             if (!ok) continue;
+            if (lim) {  // (LARECOMP_NO_LIMITER=1: passed through, as before)
+                static int no_limiter = -1;
+                if (no_limiter < 0) no_limiter = getenv("LARECOMP_NO_LIMITER") && atoi(getenv("LARECOMP_NO_LIMITER"));
+                if (fx->enabled && !no_limiter) limiter_process(&fx->lm, in, out, N);
+                else
+                    for (int c = 0; c < ch; c++) if (in[c] != out[c]) memcpy(out[c], in[c], N * sizeof(float));
+                continue;
+            }
             static int no_reverb = -1;
             if (no_reverb < 0) no_reverb = getenv("LARECOMP_NO_REVERB") ? 1 : 0;
             static int toggle = -1;
@@ -640,6 +747,14 @@ static void render_frame(Renderer *r, float *stereo) {
                     st[0] = in * k[1] + o * k[3] + st[1];
                     st[1] = in * k[2] + o * k[4];
                     smp[i] = o;
+                }
+                if (!(fabsf(st[0]) < 1e7f && fabsf(st[1]) < 1e7f)) {  // (a filter that ran away: reset, silence)
+                    static int nlog;
+                    if (nlog++ < 16)
+                        LOG("[audren] v%u biquad%d ran away (fmt %u, %u Hz): %.5f %.5f %.5f / %.5f %.5f\n", vi, fi, v->fmt,
+                            v->rate, k[0], k[1], k[2], k[3], k[4]);
+                    st[0] = st[1] = 0;
+                    memset(smp, 0, N * sizeof(float));
                 }
             }
             cs->fraction = cs->fraction + ratio * N - need;
@@ -735,8 +850,19 @@ static void render_frame(Renderer *r, float *stereo) {
             L += 0.707f * ch[2] + 0.251f * ch[3] + 0.707f * ch[4];
             R += 0.707f * ch[2] + 0.251f * ch[3] + 0.707f * ch[5];
         }
-        stereo[i * 2] = clampf(L / 32768.f, -1, 1);
-        stereo[i * 2 + 1] = clampf(R / 32768.f, -1, 1);
+        stereo[i * 2] = soft_clip(L / 32768.f);
+        stereo[i * 2 + 1] = soft_clip(R / 32768.f);
+        float a = fabsf(L) > fabsf(R) ? fabsf(L) : fabsf(R);
+        if (a > 32768.f) r->clipped++;
+        if (a > r->peak) r->peak = a;
+    }
+    // (the samples past full scale, clipped above: a line for each second that had some, the first 30)
+    if (++r->clip_frames * N >= r->sample_rate) {
+        static int lines;
+        if (r->clipped && lines++ < 30)
+            LOG("[audren] %u samples clipped in the last second (peak %.2f x full scale)\n", r->clipped, r->peak / 32768.f);
+        r->clip_frames = r->clipped = 0;
+        r->peak = 0;
     }
 }
 
@@ -905,6 +1031,13 @@ static void update_voice(Renderer *r, Voice *v, const uint8_t *p, uint8_t *out, 
             int16_t c[5];
             memcpy(c, b + 2, 10);
             for (int k = 0; k < 5; k++) v->bq[f][k] = c[k] / 16384.0f;
+        }
+        if (float_bq && b[0] && v->bq_reset[f]) {  // (TOTK's are one-pole low-passes, a0 + b1 = 1: stable as read)
+            float b1 = v->bq[f][3], b2 = v->bq[f][4];
+            static int nlog;
+            if (!(fabsf(b2) < 1 && fabsf(b1) < 1 - b2) && nlog++ < 8)
+                LOG("[audren] v%ld float biquad%d unstable as read: %.5f %.5f %.5f / %.5f %.5f\n", (long)(v - r->voice), f,
+                    v->bq[f][0], v->bq[f][1], v->bq[f][2], b1, b2);
         }
         if (b[0] && v->bq_reset[f] && getenv("LARECOMP_AUDIO_LOG"))
             LOG("[audren] v%ld biquad%d on: %.4f %.4f %.4f / %.4f %.4f\n", (long)(v - r->voice), f, v->bq[f][0], v->bq[f][1],
@@ -1077,7 +1210,7 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
         static uint32_t seen_types;
         if (e[0] && e[0] < 32 && !(seen_types & (1u << e[0]))) {
             seen_types |= 1u << e[0];
-            LOG("[audren] effect type %u used%s: slot %u mix %d enabled %u\n", e[0], e[0] == 4 ? "" : " (not implemented)", i,
+            LOG("[audren] effect type %u used%s: slot %u mix %d enabled %u\n", e[0], e[0] == 4 || e[0] == 7 ? "" : " (not implemented)", i,
                 *(const int32_t *)(e + 4), e[2]);
         }
         if (e[0] && getenv("LARECOMP_AUDIO_LOG")) {
@@ -1343,6 +1476,7 @@ void audio_stop(void) {
             if (r->wav) { wav_header(r->wav, r->wav_bytes); fclose(r->wav); }
             for (uint32_t m = 0; m < r->nmix; m++) free(r->mix[m].buf);
             for (uint32_t k = 0; k < r->splitters; k++) free(r->spl[k].ids);
+            for (uint32_t k = 0; k < r->effects; k++) free(r->fx[k].lm.delay);
             free(r->voice), free(r->chres), free(r->chst), free(r->mix), free(r->fx);  // (reverb delay lines leak)
             free(r->spl), free(r->dest);
             free(r);

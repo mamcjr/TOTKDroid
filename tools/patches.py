@@ -44,6 +44,21 @@ def _dynres_scale(gen, a):
             f'  /* {a:#x}: mov w9, w23 (the tier\'s scale) */')
 
 
+# The controller's tier (an id into its list of tiers, -1 none) is stored at [x19 + 0x134] by its three paths: a step
+# down, a step up, a reset. With only the scale held (above) the tier kept stepping - 40 steps in 3 min of walking the
+# cave, 2026-10-26 - and with it the flag the caller gets in bit 33 of the return (the tier the same as at the last
+# call), each step once a frame without the scenery. rt_dynres_tier keeps the stored tier unless the new one scales
+# higher (it stays at -1, 100 %, all session; LARECOMP_DYNRES=1: every step). (The scenery missing in cutscenes is not
+# this: it stays with the tier held - docs/TOTK-PORT.md.)
+def _dynres_tier_store(reg, word):
+    def patch(gen, a):
+        _expect(gen, a, word)
+        return ('{ extern uint32_t rt_dynres_tier(uint64_t, uint32_t, uint32_t); uint64_t p = c->x[19] + 0x134ull; '
+                f'ST32(p, rt_dynres_tier(c->x[19], LD32(p), (uint32_t)c->x[{reg}])); }}'
+                f'  /* {a:#x}: str w{reg}, [x19, #0x134] (the tier) */')
+    return patch
+
+
 # The world's frame step: FrameRateMgr derives it from the nominal frame rate ([x19+0x250], 30), as 60/fps x 0.5 (the
 # step relative to 30 fps, stored for the frame) and 60/fps x the half-step selector (the interval in 60 Hz vsyncs).
 # A phone that renders 22 fps then played in slow motion. runtime rt_frame_ratio30 / rt_frame_interval60 put the
@@ -118,6 +133,9 @@ PATCHES_143[0x7000585e48] = _render_size(0, 11, 0x1e220160)
 PATCHES_143[0x7000585e54] = _render_size(1, 10, 0x1e220140)
 
 PATCHES_143[0x70005848a8] = _dynres_scale
+PATCHES_143[0x7000584a70] = _dynres_tier_store(24, 0xb9013678)
+PATCHES_143[0x7000584b70] = _dynres_tier_store(0, 0xb9013660)
+PATCHES_143[0x7000584b94] = _dynres_tier_store(24, 0xb9013678)
 PATCHES_143[0x70002daa54] = _step_ratio_load
 PATCHES_143[0x70002daa6c] = _drop(0x5e21d800, 'scvtf s0, s0')
 PATCHES_143[0x70002daa70] = _drop(0x1e201820, 'fdiv s0, s1, s0')

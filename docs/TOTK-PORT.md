@@ -200,6 +200,43 @@ se alternar a janela". O log daquela sessão já tinha saído do logcat; o que s
   apareceu aqui: com o código menor sai em menos arquivos (1.464, eram 1.690), e a limpeza dos que sobram de uma
   geração anterior só reconhecia nomes de 3 dígitos - `main_1464.c` em diante ficariam e entrariam na compilação.
 
+## Áudio estourado, a resolução dinâmica e o cenário das cutscenes (2026-10-26, manhã)
+
+O usuário, jogando com o Turnip (agora instalado no app: `Turnip_Gen8_V37`): "ainda está piscando a tela preta,
+talvez seja a resolução dinâmica [...] e tem um audio estourado reproduzindo"; depois, numa cutscene, "o cenário
+sumiu", e "é algo somente nas cutscenes".
+
+- **O áudio estourado - resolvido.** Uma voz chegava à mixagem final com ganho **7×10^27**: o volume de um destino
+  de splitter lido 12 bytes fora do lugar. Na REV15 cada entrada `SNDI` termina com 12 bytes que o jogo não limpa, e
+  uma vez eles guardavam um cabeçalho `SNDD` velho e o texto "Main"; o leitor parava no primeiro `SNDD` que via, media
+  o passo entre destinos como 0xB4 (12 + 0xA8) e lia cada destino deslocado - o volume vinha do texto (0x6e69614d =
+  1,8×10^28). Agora um `SNDI`/`SNDD` 12 bytes adiante vence, o passo só pode ser um dos tamanhos conhecidos (0x70,
+  0x90, 0xA8) e um destino com volume absurdo (≥ 64 ou NaN) é ignorado. Medido com o limitador desligado
+  (`LARECOMP_NO_LIMITER=1`, uma cópia do save do usuário, 3 min andando e lutando): antes 100.128 amostras no volume
+  máximo e picos de 10^27; agora pico **0,48**, nenhuma.
+- **O limitador do jogo (efeito 7) - implementado.** O TOTK põe um na mixagem final (6 canais, limiar 0,708,
+  ataque instantâneo, soltura de 2 ms, look-ahead de 4 amostras) e manda volumes acima de 1 para as submixagens
+  (splitters com até 1,8). Porte do `LimiterCommandVersion1` do Ryujinx; os parâmetros conferem com o layout
+  (`[audren] limiter:` no log). A mixagem 5.1 -> estéreo ainda soma até 1,89x depois dele (picos de 1,1 algumas vezes
+  por minuto): o último estágio deixou de ser um corte seco e tem um joelho acima de 0,9. `[audren] N samples clipped`
+  no log conta o que passa do máximo.
+- **A resolução dinâmica - presa de verdade.** O patch antigo só fixava a escala que o controlador devolve; o
+  controlador seguia mudando de faixa (40 trocas em 3 min andando), e o sinal "mesma faixa da última vez" que ele
+  devolve no bit 33 mudava junto. Agora as três gravações da faixa (`main+0x584a70`, `0x584b70`, `0x584b94`, `str ...,
+  [x19, #0x134]`) passam por `rt_dynres_tier`, que só aceita uma faixa de escala maior: a faixa fica em -1 (100 %) a
+  sessão inteira (`[totk] dynamic resolution tier ... kept`). A lista de faixas é a do jogo (nós a partir de
+  `[ctl + 0x158]`, a escala em nó - 0x14, o id em nó - 8). Congelar os contadores de GPU do jogo, como o BOTW faz,
+  só reduziu as trocas (40 -> 3) e saiu.
+- **O cenário nas cutscenes - aberto.** Não é a resolução dinâmica: com a faixa presa, as paredes da caverna somem
+  igual em vários planos de cutscene (só névoa atrás dos personagens), e voltam no gameplay. Reproduz sozinho num jogo
+  novo numa pasta de save própria (`files/gentest-ng-<hora>`): a abertura, a Zelda andando com a tocha, ~45 s depois
+  do início. Seis configurações não mudam nada: `LARECOMP_SAMPLES_PASSED=0`, `LARECOMP_VK_COUNTER=cpu`,
+  `LARECOMP_REALTIME=0`, `LARECOMP_DYNRES=1`, `LARECOMP_MAX_INTERVAL=0` e o padrão. Pelos dumps de quadro: as paredes
+  **estão no G-buffer** (a reduzida das normais, 800x448, mostra a caverna inteira) e o depth do G-buffer é o mesmo
+  objeto que a iluminação amostra para fazer a profundidade em meia resolução - mas no quadro iluminado a parede sai
+  preta e só o personagem tem luz. O próximo passo é ver os valores reais (`LARECOMP_DEBUG_RAW_PASSES=1`) da
+  profundidade reduzida e do buffer de luz num plano com e num sem parede da mesma cutscene.
+
 ## Diferenças em relação ao BOTW
 
 | # | Diferença | Onde | Gravidade |

@@ -1411,7 +1411,48 @@ float rt_render_size(int axis, int32_t game, int32_t output_w) {
 uint32_t rt_dynres_scale(uint32_t game) {
     static int dyn = -1;
     if (dyn < 0) dyn = getenv("LARECOMP_DYNRES") && atoi(getenv("LARECOMP_DYNRES"));
+    static uint32_t last = 0x3f800000u;
+    static int changes;
+    if (game != last) {  // (the tier the game wanted: the first 40 changes)
+        extern uint64_t renderer_present_count(void);
+        float was, now;
+        memcpy(&was, &last, 4), memcpy(&now, &game, 4);
+        if (changes++ < 40)
+            LOG("[totk] frame %llu: the game's dynamic resolution %.2f -> %.2f (%s)\n",
+                (unsigned long long)renderer_present_count(), was, now, dyn ? "taken" : "held at 1.00");
+        last = game;
+    }
     return dyn ? game : 0x3f800000u;
+}
+// The controller's tier as it stores it (tools/patches.py): a step is taken only toward a higher scale, so the tier
+// stays where it starts (-1, 100 %) or climbs there and stays. Its tiers are a list from [ctl + 0x158] to ctl + 0x150:
+// each node's tier id at node - 8, its scale at node - 0x14 (main+0x584748's walk); -1, or an id not in the list,
+// scales 100 %.
+static float dynres_tier_scale(uint64_t ctl, uint32_t tier) {
+    if (tier == 0xffffffffu) return 1.0f;
+    uint64_t end = ctl + 0x150, node = *(const uint64_t *)(uintptr_t)(ctl + 0x158);
+    for (int i = 0; i < 64 && node != end && node >= GUEST_LO + 0x18 && node < GUEST_HI; i++) {
+        if (*(const uint32_t *)(uintptr_t)(node - 8) == tier) {
+            float f;
+            memcpy(&f, (const void *)(uintptr_t)(node - 0x14), 4);
+            return f;
+        }
+        node = *(const uint64_t *)(uintptr_t)(node + 8);
+    }
+    return 1.0f;
+}
+uint32_t rt_dynres_tier(uint64_t ctl, uint32_t cur, uint32_t want) {
+    static int dyn = -1;
+    if (dyn < 0) dyn = getenv("LARECOMP_DYNRES") && atoi(getenv("LARECOMP_DYNRES"));
+    if (dyn || want == cur) return want;
+    float now = dynres_tier_scale(ctl, cur), next = dynres_tier_scale(ctl, want);
+    // (only to a higher scale: between -1, no tier, and tier 0, both 100 %, it went back and forth every few seconds -
+    // each a change for the caller)
+    static int n;
+    if (n++ < 20)
+        LOG("[totk] dynamic resolution tier %d (%.2f) -> %d (%.2f): %s\n", (int)cur, now, (int)want, next,
+            next > now ? "taken" : "kept");
+    return next > now ? want : cur;
 }
 
 #ifdef __ANDROID__
