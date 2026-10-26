@@ -70,7 +70,8 @@ passa para a **1.4.3**: os endereços e as instruções originais dos patches de
 - **Código:** `gen.py` sem mudança (`sdk`: 40.516 funções, 1 instrução sem suporte - dados lidos como código, como
   antes; `main`: 228.238 funções, 0 sem suporte, 2 min). `GAMELIB_GEN=$PWD/generated-android-dyn-143
   GAMELIB_OUT=$PWD/android/out/v143 bash android/build_gamelib.sh <caminho absoluto>/Dump/0100F2C0115B6000/exefs`
-  (o `gen.py` lê o exefs de dentro de `tools/`: caminho absoluto). A compilação inteira levou **3 h 45** (271 MB);
+  (o `gen.py` lê o exefs de dentro de `tools/`: caminho absoluto). A compilação inteira levou **3 h 45** (271 MB;
+  desde 2026-10-26, **21 min**: abaixo, "Compilar o código do jogo");
   uma regeração com patches novos só reescreve os chunks que mudam (`write_if_changed`): 4 arquivos, **1 min 14 s**.
   As pastas ficaram com o sufixo `-143` / `v143` porque renomeá-las muda os caminhos dos objetos no CMake (uma
   compilação inteira de novo).
@@ -106,6 +107,71 @@ passa para a **1.4.3**: os endereços e as instruções originais dos patches de
 - **Ainda a ver deles:** os clears de D16 nas classificações das habilidades (Ultrahand / Recall: quadrados
   coloridos), decalques que leem o G-buffer em que se misturam (num tiler), `MatchSwitchDepthSampling`, a memória do
   pool de aplicação (3.285 MiB) e a lista de shaders compartilhada.
+
+## Travamentos, piscadas, o driver da Qualcomm e o build (2026-10-26)
+
+O usuário, jogando: "o jogo está travando muito e piscando a tela" (a tela inteira preta) e "o jogo trava e só volta
+se alternar a janela". O log daquela sessão já tinha saído do logcat; o que se achou no código e num teste:
+
+- **Qual driver:** a pasta `drivers` externa do app está vazia, então abrir o jogo pelo ícone ou pelas recentes usa o
+  **driver da Qualcomm** - o Turnip só vem dos scripts de teste (`LARECOMP_VK_DRIVER`). Com ele a 1.4.3 perde a GPU no
+  quadro ~150 (8 s, na abertura), como a 1.4.2.
+- **Do BOTWRecompAndroid** (o que ele ganhou depois de 2026-10-24 e não dependia do jogo; o resto já estava aqui ou é
+  recurso, não correção):
+  - `67234dc`: no driver da Qualcomm, nada de desenhar em fatias de imagens 3D (lá isso perdia a GPU na tela título
+    em segundos). `[vk] 3D target ...` no log diz se o TOTK desenha assim.
+  - `e237938`: até 16 imagens na swapchain (um Mali fez 12). `7d3e980`: o quadro do vídeo copiado no buffer do próprio
+    jogo (o BOTW mostrava ruído e travou num Adreno 840). `994d6c0`: as threads de áudio param antes do reset do
+    renderer (Sair > Voltar ao início caía). `23ebe74` / `7cfb427`: ferramentas de teste.
+  - Ficou de fora o `625f8c3` (congelar os contadores de GPU do jogo): o TOTK usa esses contadores na sua resolução
+    dinâmica, que aqui já está presa em 100 % pelo patch; congelá-los mexeria no que mais os lê sem teste.
+- **O travamento que volta ao trocar de janela:** duas esperas sem prazo que só a ida ao segundo plano desfazia.
+  - `vkAcquireNextImageKHR` esperava para sempre (`UINT64_MAX`): um compositor que segura os buffers prendia ali a
+    thread de render, e com ela o jogo (um quadro à frente), até a superfície sumir. Agora espera 1 s; sem imagem,
+    refaz a swapchain (o que a troca de janela fazia) e tenta de novo; sem imagem ainda, pula o quadro.
+    `[vk] no window image within 1 s` no log.
+  - O áudio: o `audren` e o `audout` esperavam o dispositivo esvaziar a fila; um stream do AAudio que parou de
+    consumir (erro, rota que sumiu) parava os eventos de áudio do jogo para sempre, até o SDL reabrir o dispositivo
+    na volta. Agora, 250 ms sem consumir nada: a fila é descartada e as amostras seguem pelo relógio até o
+    dispositivo voltar a consumir. `[audren] the audio device took nothing for 250 ms` no log.
+- **As piscadas (tela inteira preta):** um draw cujo shader ou pipeline ainda compila é pulado (para não travar), e um
+  alvo desenhado todo quadro "refazia" o draw no quadro seguinte. Nos passes de pós-processamento, na composição final
+  e no HUD (sem alvo de profundidade, poucos passes de tela cheia), um draw pulado deixa o quadro inteiro preto - o
+  sintoma em terreno novo, com shaders novos. Agora todo draw sem profundidade espera o seu pipeline (uma espera na
+  primeira vez de cada shader; os caches guardam). `LARECOMP_WAIT_NO_DEPTH=0` volta ao de antes;
+  `[vk] frame N: a draw into WxH ... skipped` mostra os 40 primeiros draws grandes ainda pulados (os com profundidade).
+- **O "travando muito": quadros de 300 ms na GPU - resolvido.** Andando pela caverna com o Turnip (o save do usuário,
+  `play_test.sh`: o direcional de toque e a câmera arrastada), o jogo caía de 30 para **3-6 fps** por vários segundos,
+  quadros de 200-700 ms, a thread de render esperando a GPU quase o tempo todo. `LARECOMP_GPUPROF_SLOW=<ms>` (novo:
+  perfila o quadro depois de um mais lento que isso, até 12) achou sempre o mesmo passe (1600x896, `de65b7d7...`) e,
+  com `LARECOMP_GPUPROF_DRAWS=1`, **um draw** de 2.832 índices: **95-102 ms** de GPU (o shader `b9e2681d3cbc73d8`, de
+  material; outro, `18c1caaa...`, 6-20 ms). O GLSL (`LARECOMP_DUMP_FS`): o shader guarda um registrador na memória
+  local (um `STL [0x0]` e um `LDL [0x0]`, spill do compilador da Nintendo), e o tradutor declarava `uint lmem[256]` e
+  zerava as 256 palavras **a cada pixel** - 1 KB por thread não cabe em registradores, vai para a memória privada, e
+  o laço escrevia 256 vezes por pixel. Agora o vetor tem o tamanho que os acessos pedem: os de endereço constante, as
+  palavras que alcançam (aqui 1); com endereço em registrador, o tamanho do SPH (`ShaderLocalMemoryLowSize` +
+  `HighSize`), ou as 256 sem SPH; potência de 2 (o índice é mascarado: `lmask_`). Mesmo trajeto depois: **nenhum
+  quadro acima de 200 ms** (antes, 11 em 4 min), 20-30 fps com o quadro máximo em ~52 ms. Fuzz do tradutor (4.000
+  programas): só as 14 falhas antigas de `textureGather`; `tools/test_translate_ops.sh`: 31 casos, 0 falhas.
+- **O driver da Qualcomm, de novo (o `67234dc`):** o TOTK também desenha nas fatias de um volume 32x32x32 (`[vk] 3D
+  target 32x32x32 level 1`, no quadro ~150 - exatamente onde a GPU se perdia). Sem esses draws, a 1.4.3 passa da
+  abertura e carrega o save: **5 min jogando, sem *device lost***, a imagem certa (caverna iluminada, Link escalando),
+  mas a ~9-10 fps (render ~70 ms por quadro no modo de cópia desse driver, GPU 43 % do tempo esperada). O Turnip segue
+  muito melhor: 20-30 fps.
+- **Compilar o código do jogo - de horas para minutos.** Um arquivo, `main_568.c`, levava **199 min** (a compilação
+  inteira, 3 h 45, esperava por ele). Não era o tamanho: a função `f_70006fe6ac` (9.746 instruções) tem uma tabela de
+  salto, e toda função com tabela ganhava um switch de "rede de segurança" com **um case por instrução** (9.745), caso
+  a emulação da tabela tivesse perdido algum alvo. Uma aresta para cada instrução: cada uma vira um bloco com dois
+  predecessores, e o otimizador do clang se perde nisso (e não junta nada entre duas instruções). Medido nessa função
+  sozinha, a -O1: o original passou de 11 min sem terminar; sem a rede, **3 s**; com a rede só nos **inícios de
+  bloco** (os alvos de desvio, os das tabelas e cada instrução depois de um salto, retorno ou trap: 685 cases),
+  **10 s**. É o que o `gen.py` faz agora; uma função com tabela **não resolvida** (142 delas) mantém a rede em toda
+  instrução, como antes. Das 842 min de CPU da compilação, 666 eram de arquivos com uma função dessas de mais de 1.024
+  instruções. **A compilação inteira no PC: 21 min 34 s** (era 3 h 45), 191 min de CPU (eram 842), o arquivo mais
+  lento 12 min (uma das funções com tabela não resolvida), e o `totkgame.so` de 271 para 224 MB. O jogo roda com ele
+  (os testes de desempenho acima). Com menos rótulos, só 2 arquivos passam de 15.000 e vão a -O0 (eram 13). E um bug do `gen.py` que
+  apareceu aqui: com o código menor sai em menos arquivos (1.464, eram 1.690), e a limpeza dos que sobram de uma
+  geração anterior só reconhecia nomes de 3 dígitos - `main_1464.c` em diante ficariam e entrariam na compilação.
 
 ## Diferenças em relação ao BOTW
 
