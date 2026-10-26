@@ -857,12 +857,25 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
         if (sh == b->sample_hash) return;
     }
     prof_tex_full++; prof_tex_full_bytes += total; if (b->dynamic) prof_tex_dyn++;
-    uint64_t h = fast ? tex_hash_full(mem, total) : hash_full(mem, total);
+    uint64_t h = fast ? tex_hash_full(mem, total) : hash_full(mem, total), last_full = b->full_frame,
+             old_sample = b->sample_hash;
     b->full_frame = frame;
     // (the sample is only compared while the texture isn't dynamic, and a dynamic one stays so: none for those)
     if (!fast) b->sample_hash = fnv_sample(mem, total);
     else if (!b->dynamic && !(b->uploaded && h != b->data_hash)) b->sample_hash = tex_hash_sample(mem, total);
     if (b->uploaded && h == b->data_hash && !restyle) return;
+    if (b->uploaded && h != b->data_hash && !b->dynamic && !always_full) {
+        // LARECOMP_LOG_TEX_MISS=1 (diagnosis): a change the sampled check didn't see, found by the periodic full hash -
+        // the texture showed its old contents meanwhile (the stretched-terrain curtains after a tower: gone with
+        // LARECOMP_TEX_FULLHASH=1, 2026-10-26)
+        static int on = -1, n;
+        if (on < 0) on = getenv("LARECOMP_LOG_TEX_MISS") != NULL;
+        if (on && n++ < 200)
+            LOG("[texmiss] frame %llu: %ux%ux%u fmt %#x flags %#x target %u levels %u at %llx+%llx changed, found %llu frames "
+                "after the last full hash; the samples %s\n", (unsigned long long)frame, t->width, t->height, t->depth,
+                t->format, t->flags, t->target, t->levels, (unsigned long long)t->addr, (unsigned long long)total,
+                (unsigned long long)(frame - last_full), b->sample_hash == old_sample ? "unchanged (missed)" : "changed");
+    }
     if (b->uploaded && h != b->data_hash) b->dynamic = true;
     // new contents (the game reused the memory for another image, or the data arrived after the first check): which
     // known texture it is, if any, is decided again before this upload patches it
