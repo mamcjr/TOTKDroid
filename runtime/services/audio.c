@@ -740,6 +740,53 @@ static void render_frame(Renderer *r, float *stereo) {
     }
 }
 
+// Waiting for the device's stream to drain below its target. A device that stopped taking samples (an AAudio stream
+// that errored, a route that went away) held those waits forever: the game's audio events stopped, and the game with
+// them, until the app went to the background and back (SDL restarts the device there; TOTK, 2026-10-25). After 250 ms
+// with nothing taken the queue is dropped and the samples go by the clock (period_ns each wait), until the device takes
+// some again. added: the bytes put into the stream since the last wait.
+typedef struct { bool stalled; int last; uint64_t next; unsigned n; } Drain;
+
+static uint64_t mono_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static void drain_wait(Drain *d, SDL_AudioStream *st, int target, uint64_t period_ns, int added, const volatile bool *quit,
+                       const char *who) {
+    int q = SDL_GetAudioStreamQueued(st);
+    if (d->stalled) {
+        if (q < d->last + added) {
+            d->stalled = false;
+            LOG("[%s] the audio device takes samples again\n", who);
+        } else {
+            if (q >= target) SDL_ClearAudioStream(st);
+            uint64_t now = mono_ns();
+            if (!d->next || d->next + 100000000ull < now) d->next = now;
+            if (d->next > now) { struct timespec ts = {0, (long)(d->next - now)}; nanosleep(&ts, NULL); }
+            d->next += period_ns;
+            d->last = SDL_GetAudioStreamQueued(st);
+            return;
+        }
+    }
+    int q0 = q, ms = 0;
+    while (q >= target && !*quit) {
+        struct timespec ts = {0, 1000000};
+        nanosleep(&ts, NULL);
+        q = SDL_GetAudioStreamQueued(st);
+        if (q < q0) { q0 = q; ms = 0; continue; }
+        if (++ms < 250) continue;
+        d->stalled = true;
+        d->next = 0;
+        if (++d->n <= 10 || d->n % 100 == 0)
+            LOG("[%s] the audio device took nothing for 250 ms (%u): its queue dropped, the samples go by the clock\n", who, d->n);
+        SDL_ClearAudioStream(st);
+        d->last = 0;
+        return;
+    }
+}
+
 // Output gain: menu volume times LARECOMP_AUDIO_GAIN (applied live).
 static void apply_gain(SDL_AudioStream *st) {
     static double env = -1;
@@ -777,12 +824,10 @@ static void *renderer_tick(void *arg) {
                 target / (2 * (int)sizeof(float)));
         }
     }
+    Drain drain = {0};
     while (!r->quit) {
         if (r->stream) {
-            while (SDL_GetAudioStreamQueued(r->stream) >= target && !r->quit) {
-                struct timespec ts = {0, 1000000};
-                nanosleep(&ts, NULL);
-            }
+            drain_wait(&drain, r->stream, target, (uint64_t)N * 1000000000ull / r->sample_rate, frame_bytes, &r->quit, "audren");
         } else {
             clock_gettime(CLOCK_MONOTONIC, &now);
             uint64_t t = now.tv_sec * 1000000000ull + now.tv_nsec;
@@ -1326,6 +1371,7 @@ static void *audout_thread(void *arg) {
             dev_frames = 1024;
         target = 2 * dev_frames * 2 * (int)ch;  // bytes of s16 at the source rate (close enough at 48 kHz)
     }
+    Drain drain = {0};
     while (!a->quit) {
         pthread_mutex_lock(&a->lock);
         uint64_t size = 0, tag = 0, data = 0;
@@ -1336,7 +1382,8 @@ static void *audout_thread(void *arg) {
         if (a->stream) {
             apply_gain(a->stream);
             if (data) SDL_PutAudioStreamData(a->stream, (const void *)(uintptr_t)data, (int)size);
-            while (SDL_GetAudioStreamQueued(a->stream) > target && !a->quit) { struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL); }
+            drain_wait(&drain, a->stream, target + 1, frames * 1000000000ull / (a->rate ? a->rate : 48000), data ? (int)size : 0,
+                       &a->quit, "audout");
         } else {
             uint64_t ns = frames * 1000000000ull / (a->rate ? a->rate : 48000);
             struct timespec ts = {(time_t)(ns / 1000000000ull), (long)(ns % 1000000000ull)};

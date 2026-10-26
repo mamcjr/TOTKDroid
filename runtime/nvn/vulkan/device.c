@@ -1075,10 +1075,21 @@ bool vk_frame_begin(const float clear[4]) {
     if (timing) vk_timing_trace_wait(VK_TIMING_SLOT, SDL_GetTicksNS() - trace_start);
     trace_start = timing ? SDL_GetTicksNS() : 0;
 #endif
-    VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+    // At most a second for a window image: with no limit a compositor that kept every buffer held the game's frame there
+    // until the app went to the background (the surface's loss ends the wait) - TOTK froze until another window came
+    // in front and back (2026-10-25). Then the swapchain is made again, as that trip does; still none: no frame now.
+    const uint64_t acquire_ns = 1000000000ull;
+    VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, acquire_ns, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+    if (r == VK_TIMEOUT || r == VK_NOT_READY) {
+        static int nstuck;
+        if (nstuck++ < 20) LOG("[vk] no window image within 1 s (%d): the swapchain made again\n", r);
+        r = VK_ERROR_OUT_OF_DATE_KHR;
+    }
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         recreate_swapchain();
-        r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+        if (!g_vk.swapchain) return false;
+        r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, acquire_ns, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+        if (r == VK_TIMEOUT || r == VK_NOT_READY) { LOG("[vk] still no window image: frame skipped\n"); return false; }
     }
 #ifdef __ANDROID__
     if (timing) vk_timing_trace_wait(VK_TIMING_ACQUIRE, SDL_GetTicksNS() - trace_start);
