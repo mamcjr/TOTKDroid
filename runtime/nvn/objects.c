@@ -1426,6 +1426,15 @@ NVN(nvnWindowSetPresentInterval) {
         uint32_t *max_iv = (uint32_t *)(uintptr_t)(c->x[19] + 0x234);
         if (*max_iv > 2) *max_iv = 2;
     }
+    // TOTK 1.4.3's controller (lr main+0x2db2ec) takes 3 - 20 fps - when its main thread's measured frame work passes a
+    // 30 fps frame (MacNativeGames' notes); here that work holds the waits for the render thread and the GPU, and it
+    // swung between 2 and 3 every second or two with ~23 ms of render and ~25 ms of GPU a frame (POCO F7 Ultra, Turnip,
+    // the cave, 2026-10-26). The world's step is the measured time (tools/patches.py), so the interval only paces the
+    // presents here: at most 2. LARECOMP_MAX_INTERVAL=<n> (0: the game's own).
+    static int max_interval = -1;
+    if (max_interval < 0)
+        max_interval = getenv("LARECOMP_MAX_INTERVAL") ? atoi(getenv("LARECOMP_MAX_INTERVAL")) : g_game_version == GAME_V_143 ? 2 : 0;
+    if (max_interval > 0 && (int)A(1) > max_interval) c->x[1] = (uint64_t)max_interval;
     if ((int)A(1) != g_present_interval)
         LOG("[pace] the game sets its present interval to %d (lr %llx, x19 %llx [+0x240] %lld)\n", (int)A(1),
             (unsigned long long)c->x[30], (unsigned long long)c->x[19],
