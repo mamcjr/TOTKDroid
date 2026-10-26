@@ -1388,6 +1388,22 @@ void backend_present(NvnTexture *t) {
             if (at == (long)total_frames) { g_gpuprof_frame = true; break; }
             if (*p == ',') p++; else break;
         }
+        // LARECOMP_GPUPROF_SLOW=<ms>: the frame after one that took longer than that (present to present), at most
+        // 12 of them, 90 frames apart - the slow moments of a session that come and go (TOTK's 300 ms frames)
+        static long slow_ms = -1;
+        static uint64_t slow_last_ns, slow_at;
+        static int slow_n;
+        if (slow_ms < 0) slow_ms = getenv("LARECOMP_GPUPROF_SLOW") ? atol(getenv("LARECOMP_GPUPROF_SLOW")) : 0;
+        uint64_t now_ns = SDL_GetTicksNS();
+        if (slow_ms > 0 && slow_last_ns && now_ns - slow_last_ns > (uint64_t)slow_ms * 1000000ull && slow_n < 12 &&
+            total_frames > slow_at + 90) {
+            LOG("[gpuprof] frame %llu took %.0f ms: the next one profiled\n", (unsigned long long)total_frames,
+                (now_ns - slow_last_ns) / 1e6);
+            g_gpuprof_frame = true;
+            slow_at = total_frames;
+            slow_n++;
+        }
+        slow_last_ns = now_ns;
     }
     if (g_debug_frame) LOG("===== debug frame %llu =====\n", (unsigned long long)total_frames);
     {   // LARECOMP_CAM_PROJ=<hex address> (a widescreen test): a sead::PerspectiveProjection there (1.8.2's main camera
