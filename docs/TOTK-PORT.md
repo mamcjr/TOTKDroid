@@ -234,8 +234,20 @@ sumiu", e "é algo somente nas cutscenes".
   `LARECOMP_REALTIME=0`, `LARECOMP_DYNRES=1`, `LARECOMP_MAX_INTERVAL=0` e o padrão. Pelos dumps de quadro: as paredes
   **estão no G-buffer** (a reduzida das normais, 800x448, mostra a caverna inteira) e o depth do G-buffer é o mesmo
   objeto que a iluminação amostra para fazer a profundidade em meia resolução - mas no quadro iluminado a parede sai
-  preta e só o personagem tem luz. O próximo passo é ver os valores reais (`LARECOMP_DEBUG_RAW_PASSES=1`) da
-  profundidade reduzida e do buffer de luz num plano com e num sem parede da mesma cutscene.
+  preta e só o personagem tem luz. Comparando com um quadro de gameplay (logs dos dumps, offline):
+  - As paredes usam **os mesmos shaders** nos dois (o da rocha, `fs 245e6a300`: 41 draws na cutscene, 27 no gameplay).
+  - As luzes da cutscene são **os mesmos shaders** das do gameplay (mesmos hashes, outros endereços); só uma é só de
+    cutscene (`7ab0674cbc2b0e61`, uma luz com textura projetada, 32 draws). A profundidade reduzida que elas leem é
+    escrita uma vez, da profundidade do G-buffer, antes delas, nos dois.
+  - A cadeia de 6 shaders de tela cheia que só a cutscene tem (`241d60100` ... `241d65500`) é a profundidade de campo,
+    e vem **depois**: a cena iluminada antes dela (1600x896 `f0x3f @35b9d8200`) já tem a parede preta.
+  - O alvo 0 do G-buffer (`@35cb5ee00`) guarda bandeiras de material, não a geometria: no gameplay também é zero na
+    maior parte das paredes.
+  - Formatos conferidos: `0x11` (o tamanho do desfoque) é RG16F, `0x4B` é BC5.
+  Próximos testes (no celular, a abertura de um jogo novo): `TU_DEBUG=nolrz` (o LRZ do Turnip está ligado),
+  `LARECOMP_FEEDBACK_COPY=1` (leituras do próprio alvo por cópia), `LARECOMP_NO_EARLY_Z=1`; o GLSL das luzes
+  (`LARECOMP_DUMP_FS=` os hashes acima) e os valores reais (`LARECOMP_DEBUG_RAW_PASSES=1`) do buffer de luz e da
+  profundidade reduzida num plano com e num sem parede.
 
 ## Diferenças em relação ao BOTW
 
