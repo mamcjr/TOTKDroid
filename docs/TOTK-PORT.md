@@ -169,6 +169,15 @@ se alternar a janela". O log daquela sessão já tinha saído do logcat; o que s
   ~9-10 fps). Lá as leituras de um alvo que o draw escreve viram cópias (~40 por quadro de alvos 1600x896); lê-las no
   lugar (`LARECOMP_FEEDBACK_INPLACE=1`, indefinido nesse driver) deu 16,7 fps e a imagem certa nas capturas - pouco
   para ligar sem garantia. O gargalo restante é o modo de cópia da memória do jogo (~550 MB de upload a cada 2 s).
+- **Próximo candidato a desempenho: a cópia de buffer de cada quadro.** A thread de render espera a GPU numa cópia
+  buffer -> buffer (`waits: buffer -> buffer copy` no `LARECOMP_VK_PROF`): ~5,6 ms por quadro no Turnip, ~27 ms no
+  driver da Qualcomm. `LARECOMP_LOG_BUFCOPY=1`: é uma só por quadro, **304 bytes** de `3b64a3040` para dois destinos
+  alternados (`3b612d840` / `3b612dc40`, um buffer duplo), e a GPU escreve a origem (o conteúdo mudou durante a
+  espera em 29 de 30). O `CMD_COPY_BUFFER_TO_BUFFER` é um `memmove` na CPU depois de esperar toda a GPU: certo, mas
+  serializa a CPU e a GPU. Na GPU (um `vkCmdCopyBuffer` dentro do heap colocado, Turnip) a espera some, desde que quem
+  lê o destino depois (as cópias de constantes que o renderer tira ao gravar um draw, ou o jogo na CPU) espere o
+  fence. Quem o lê ficou sem resposta: o vigia de leitura (`LARECOMP_WATCH_READ_ADDR`) derrubou o jogo com o heap
+  colocado (sinal 11 logo depois de armar).
 - **Ainda pulados:** draws com profundidade cujo shader ainda compila (rajadas de centenas quando entram shaders
   novos, como depois de mudar o tradutor): um objeto que aparece um quadro depois, não a tela preta.
 - **O driver da Qualcomm, de novo (o `67234dc`):** o TOTK também desenha nas fatias de um volume 32x32x32 (`[vk] 3D

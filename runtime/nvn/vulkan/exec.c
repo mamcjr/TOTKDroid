@@ -7090,6 +7090,19 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_WAIT_EVENT: break;  // (one queue, in order: what it waits for already ran - or is the CPU's to signal)
         case CMD_COPY_BUFFER_TO_BUFFER:
             wait_why = "buffer -> buffer copy";
+            {   // LARECOMP_LOG_BUFCOPY=1: the first 30 (where in the frame, how large: each waits for the GPU here)
+                static int log = -1, n;
+                if (log < 0) log = getenv("LARECOMP_LOG_BUFCOPY") != NULL;
+                if (log && n++ < 30) {
+                    // (whether the GPU writes the source: its bytes before and after the wait)
+                    uint64_t h0 = hmix(1469598103934665603ull, (const void *)(uintptr_t)r->x[0], r->x[2] < 4096 ? r->x[2] : 4096);
+                    renderer_flush();
+                    uint64_t h1 = hmix(1469598103934665603ull, (const void *)(uintptr_t)r->x[0], r->x[2] < 4096 ? r->x[2] : 4096);
+                    LOG("[vk] frame %llu: buffer copy %llx -> %llx, %llu bytes; the source %s by the wait\n",
+                        (unsigned long long)renderer_present_count(), (unsigned long long)r->x[0], (unsigned long long)r->x[1],
+                        (unsigned long long)r->x[2], h0 == h1 ? "unchanged" : "CHANGED");
+                }
+            }
             renderer_flush();
             memmove((void *)(uintptr_t)r->x[1], (void *)(uintptr_t)r->x[0], r->x[2]);
             break;
