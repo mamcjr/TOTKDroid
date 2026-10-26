@@ -161,6 +161,14 @@ se alternar a janela". O log daquela sessão já tinha saído do logcat; o que s
   (`LARECOMP_MAX_INTERVAL=<n>`, 0 = o do jogo). A mesma caminhada de 3 min (`LARECOMP_LOG_PACE=1`): **23,7 -> 29,5
   fps** de média, quadros acima de 40 ms de 53 % para 4,4 %, acima de 60 ms 0,1 %; render 16,7 ms e GPU 18,9 ms por
   quadro.
+- **Quadros escuros, medidos:** 30 s de vídeo andando e girando a câmera (`screenrecord`, a luma média de cada quadro
+  pelo `signalstats` do ffmpeg; escuro = abaixo de 35 % da mediana dos 10 vizinhos): Turnip, 852 quadros, **0
+  escuros**; driver da Qualcomm, 313 quadros, **0 escuros**. (O título da área, "Subsolo do Castelo", se desfaz em
+  partículas: é do jogo.)
+- **No driver da Qualcomm, depois de tudo isso:** 16,0 fps de média andando (render 37 ms, GPU 37 ms por quadro; eram
+  ~9-10 fps). Lá as leituras de um alvo que o draw escreve viram cópias (~40 por quadro de alvos 1600x896); lê-las no
+  lugar (`LARECOMP_FEEDBACK_INPLACE=1`, indefinido nesse driver) deu 16,7 fps e a imagem certa nas capturas - pouco
+  para ligar sem garantia. O gargalo restante é o modo de cópia da memória do jogo (~550 MB de upload a cada 2 s).
 - **Ainda pulados:** draws com profundidade cujo shader ainda compila (rajadas de centenas quando entram shaders
   novos, como depois de mudar o tradutor): um objeto que aparece um quadro depois, não a tela preta.
 - **O driver da Qualcomm, de novo (o `67234dc`):** o TOTK também desenha nas fatias de um volume 32x32x32 (`[vk] 3D
