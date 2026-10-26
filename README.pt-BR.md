@@ -33,7 +33,7 @@ Android.
   Link controlável e o HUD e as dicas em português, a cerca de 30 fps andando (Turnip). A cena fica em 1600x896 (a resolução dinâmica
   do jogo dava quadros pretos a cada troca) e o mundo anda pelo tempo real. As vozes dos personagens, a música e o
   ambiente chegam à mixagem (o decodificador Opus e os splitters do renderizador de áudio; conferido gravando a saída
-  na 1.4.2, a versão anterior do porte). Com o driver da própria Qualcomm também roda, a cerca de 10 fps.
+  na 1.4.2, a versão anterior do porte). Com o driver da própria Qualcomm também roda, a cerca de 15 fps.
 - Falta: os vídeos (não conferidos), o widescreen, os 60 fps, o desempenho além da caverna.
 
 > [!IMPORTANT]

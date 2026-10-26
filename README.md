@@ -32,7 +32,7 @@ Android only (arm64, Vulkan). Windows, Linux or macOS may be used as development
   Link under control and the HUD and hints in Portuguese, at about 30 fps walking around (Turnip). The scene is held at 1600x896 (the game's
   dynamic resolution gave black frames at each step) and the world steps by real time. Character voices, music and
   ambience reach the mix (Opus decoding and the audio renderer's splitters; checked by recording the output on 1.4.2,
-  the port's previous version). With Qualcomm's own driver it plays too, at about 10 fps.
+  the port's previous version). With Qualcomm's own driver it plays too, at about 15 fps.
 - Not done yet: movies (not checked), widescreen, 60 fps, performance beyond the cave.
 
 > [!IMPORTANT]
