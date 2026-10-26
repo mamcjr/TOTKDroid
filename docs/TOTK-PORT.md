@@ -153,6 +153,16 @@ se alternar a janela". O log daquela sessão já tinha saído do logcat; o que s
   `HighSize`), ou as 256 sem SPH; potência de 2 (o índice é mascarado: `lmask_`). Mesmo trajeto depois: **nenhum
   quadro acima de 200 ms** (antes, 11 em 4 min), 20-30 fps com o quadro máximo em ~52 ms. Fuzz do tradutor (4.000
   programas): só as 14 falhas antigas de `textureGather`; `tools/test_translate_ops.sh`: 31 casos, 0 falhas.
+- **30 fps estáveis em vez de 30 <-> 20:** sem os quadros de 100 ms o jogo ainda trocava o intervalo de
+  apresentação entre 2 e 3 a cada um ou dois segundos (`[pace] the game sets its present interval to 3`, lr
+  `main+0x2db2ec`: o controlador que, pelas notas do MacNativeGames, passa a 3 quando o trabalho medido da thread
+  principal passa de um quadro de 30 fps - aqui esse trabalho inclui as esperas pela thread de render e pela GPU).
+  Com o passo do mundo em tempo real, o intervalo só ritma os presents: na 1.4.3 ele fica em no máximo 2
+  (`LARECOMP_MAX_INTERVAL=<n>`, 0 = o do jogo). A mesma caminhada de 3 min (`LARECOMP_LOG_PACE=1`): **23,7 -> 29,5
+  fps** de média, quadros acima de 40 ms de 53 % para 4,4 %, acima de 60 ms 0,1 %; render 16,7 ms e GPU 18,9 ms por
+  quadro.
+- **Ainda pulados:** draws com profundidade cujo shader ainda compila (rajadas de centenas quando entram shaders
+  novos, como depois de mudar o tradutor): um objeto que aparece um quadro depois, não a tela preta.
 - **O driver da Qualcomm, de novo (o `67234dc`):** o TOTK também desenha nas fatias de um volume 32x32x32 (`[vk] 3D
   target 32x32x32 level 1`, no quadro ~150 - exatamente onde a GPU se perdia). Sem esses draws, a 1.4.3 passa da
   abertura e carrega o save: **5 min jogando, sem *device lost***, a imagem certa (caverna iluminada, Link escalando),

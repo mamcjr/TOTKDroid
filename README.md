@@ -12,7 +12,7 @@ It is built on the engine of **[LAS Recomp](https://github.com/peiikai/LASRecomp
 
 > [!WARNING]
 > **Early.** On the phone (with the Turnip driver) the game loads a save in the prologue's cave and Link can be moved,
-> at about 20 fps; little beyond that has been played. The plan and the state of each phase are in
+> at about 30 fps; little beyond that has been played. The plan and the state of each phase are in
 > [docs/TOTK-PORT.md](docs/TOTK-PORT.md) (in Portuguese).
 
 ## Supported platform
@@ -26,14 +26,14 @@ Android only (arm64, Vulkan). Windows, Linux or macOS may be used as development
 - 1.4.3 runs on Nintendo SDK 20.5.22, the line of BOTW 1.8.2's 20.5.6 (NVN 55): what the engine learned from BOTW 1.8.2
   applies. The game's patches and much of what is known about it come from
   [MacNativeGames](https://github.com/ly05010419/MacNativeGames), which runs this very build natively on Macs and iPhones.
-- The game's code generates and builds: 228,238 functions from `main` and 40,516 from the SDK, in a 271 MB
+- The game's code generates and builds: 228,238 functions from `main` and 40,516 from the SDK, in a 224 MB
   `totkgame.so`.
 - On the phone (POCO F7 Ultra, the Turnip driver): the title screen, then a save loaded in the prologue's cave with
-  Link under control and the HUD and hints in Portuguese, at about 20 fps. The scene is held at 1600x896 (the game's
+  Link under control and the HUD and hints in Portuguese, at about 30 fps walking around (Turnip). The scene is held at 1600x896 (the game's
   dynamic resolution gave black frames at each step) and the world steps by real time. Character voices, music and
   ambience reach the mix (Opus decoding and the audio renderer's splitters; checked by recording the output on 1.4.2,
-  the port's previous version). With Qualcomm's own driver the GPU is lost right after the opening.
-- Not done yet: movies (not checked), widescreen, 60 fps, performance.
+  the port's previous version). With Qualcomm's own driver it plays too, at about 10 fps.
+- Not done yet: movies (not checked), widescreen, 60 fps, performance beyond the cave.
 
 > [!IMPORTANT]
 > Like LAS Recomp, this project is made almost entirely with AI (Claude, by Anthropic, through Claude Code), directed,
@@ -52,7 +52,7 @@ With the Android SDK / NDK and your dump in `Dump/0100F2C0115B6000/` (`exefs/` a
 ```bash
 cd tools && python totk_dump.py                              # check the dump (modules, version, romfs)
 cd android/totkrecompandroid && ./gradlew assembleDebug      # the app
-android/build_gamelib.sh Dump/0100F2C0115B6000/exefs         # the game code (hours)
+android/build_gamelib.sh Dump/0100F2C0115B6000/exefs         # the game code (~20 min on a PC)
 ROMFS_HOST=1 android/push_game.sh Dump/0100F2C0115B6000      # game files and game code onto the phone
 android/run_boot.sh 120                                      # start the game, log to android/out/boot.log
 ```

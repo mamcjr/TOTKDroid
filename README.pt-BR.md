@@ -12,7 +12,7 @@ Feito sobre o motor do **[LAS Recomp](https://github.com/peiikai/LASRecomp)**, d
 
 > [!WARNING]
 > **No começo.** No celular (com o driver Turnip) o jogo carrega um save na caverna do prólogo e dá para mover o Link, a
-> cerca de 20 fps; pouco além disso foi jogado. O plano e o estado de cada fase estão em
+> cerca de 30 fps; pouco além disso foi jogado. O plano e o estado de cada fase estão em
 > [docs/TOTK-PORT.md](docs/TOTK-PORT.md).
 
 ## Plataforma
@@ -28,13 +28,13 @@ Android.
   com o BOTW 1.8.2 vale. Os patches do jogo e muito do que se sabe dele vêm do
   [MacNativeGames](https://github.com/ly05010419/MacNativeGames), que roda exatamente esta versão nativa em Macs e
   iPhones.
-- O código do jogo é gerado e compila: 228.238 funções do `main` e 40.516 do SDK, num `totkgame.so` de 271 MB.
+- O código do jogo é gerado e compila: 228.238 funções do `main` e 40.516 do SDK, num `totkgame.so` de 224 MB.
 - No celular (POCO F7 Ultra, driver Turnip): a tela título e depois um save carregado na caverna do prólogo, com o
-  Link controlável e o HUD e as dicas em português, a cerca de 20 fps. A cena fica em 1600x896 (a resolução dinâmica
+  Link controlável e o HUD e as dicas em português, a cerca de 30 fps andando (Turnip). A cena fica em 1600x896 (a resolução dinâmica
   do jogo dava quadros pretos a cada troca) e o mundo anda pelo tempo real. As vozes dos personagens, a música e o
   ambiente chegam à mixagem (o decodificador Opus e os splitters do renderizador de áudio; conferido gravando a saída
-  na 1.4.2, a versão anterior do porte). Com o driver da própria Qualcomm a GPU se perde logo depois da abertura.
-- Falta: os vídeos (não conferidos), o widescreen, os 60 fps, o desempenho.
+  na 1.4.2, a versão anterior do porte). Com o driver da própria Qualcomm também roda, a cerca de 10 fps.
+- Falta: os vídeos (não conferidos), o widescreen, os 60 fps, o desempenho além da caverna.
 
 > [!IMPORTANT]
 > Como o LAS Recomp, este projeto é feito quase inteiramente com IA (Claude, da Anthropic, pelo Claude Code), dirigido,
@@ -53,7 +53,7 @@ Com o SDK / NDK do Android e o seu dump em `Dump/0100F2C0115B6000/` (`exefs/` e 
 ```bash
 cd tools && python totk_dump.py                              # confere o dump (módulos, versão, romfs)
 cd android/totkrecompandroid && ./gradlew assembleDebug      # o app
-android/build_gamelib.sh Dump/0100F2C0115B6000/exefs         # o código do jogo (horas)
+android/build_gamelib.sh Dump/0100F2C0115B6000/exefs         # o código do jogo (~20 min num PC)
 ROMFS_HOST=1 android/push_game.sh Dump/0100F2C0115B6000      # arquivos e código do jogo para o celular
 android/run_boot.sh 120                                      # inicia o jogo, log em android/out/boot.log
 ```
