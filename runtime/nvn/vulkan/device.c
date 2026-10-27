@@ -508,6 +508,10 @@ static void create_device(void) {
     if (g_vk.divisor) ext[n_ext++] = VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME;
     g_vk.host_import = has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);  // guest heap as a GPU buffer (exec.c)
 #ifdef __ANDROID__
+    // Mali-G2-Ultra (Xring O3, driver r56p0): with the import and the global-memory arena (exec.c gres_init) the game's
+    // text went missing from every menu; with both off it is all there (BOTWRecompAndroid issue #44). The arena off
+    // there unless LARECOMP_VK_NO_GRES says otherwise (the import is off on every phone, below).
+    if (strstr(g_vk.props.deviceName, "Mali-G2-Ultra")) setenv("LARECOMP_VK_NO_GRES", "1", 0);
     // Phones: the import pins all of the guest heap. Samsung's Xclipse driver took it and then failed the first
     // submission (VK_ERROR_UNKNOWN, Galaxy S26, in LASRecomp-Android-Plus), and Mali drivers offer the extension too;
     // Adreno's own driver doesn't. The CPU copies (exec.c gcopy) run everywhere. LARECOMP_VK_HOST_IMPORT=1: the import
