@@ -539,3 +539,7 @@
  "Здесь нет сохранения TOTK: выберите папку с slot_00, slot_01... и option.sav."},
 {"That didn't work: %s",
  "Не получилось: %s"},
+{"Stick dead zone",
+ "Мёртвая зона стиков"},
+{"A stick held this close to the centre counts as centred, for worn sticks that move Link or the camera on their own (drift). Off: only the game's own.",
+ "Стик так близко к центру считается отпущенным - для изношенных стиков, которые сами двигают Линка или камеру (дрифт). Выкл.: только собственная зона игры."},

@@ -539,3 +539,7 @@
  "Nessun salvataggio di TOTK qui: scegli la cartella che contiene slot_00, slot_01... e option.sav."},
 {"That didn't work: %s",
  "Non ha funzionato: %s"},
+{"Stick dead zone",
+ "Zona morta degli stick"},
+{"A stick held this close to the centre counts as centred, for worn sticks that move Link or the camera on their own (drift). Off: only the game's own.",
+ "Uno stick così vicino al centro conta come centrato, per stick consumati che muovono Link o la telecamera da soli (drift). Disattivata: solo quella del gioco."},

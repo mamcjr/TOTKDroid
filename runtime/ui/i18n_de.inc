@@ -539,3 +539,7 @@
  "Dort ist kein TOTK-Spielstand: Wähle den Ordner mit slot_00, slot_01... und option.sav."},
 {"That didn't work: %s",
  "Das hat nicht geklappt: %s"},
+{"Stick dead zone",
+ "Totzone der Sticks"},
+{"A stick held this close to the centre counts as centred, for worn sticks that move Link or the camera on their own (drift). Off: only the game's own.",
+ "Ein Stick so nah an der Mitte zählt als zentriert - für abgenutzte Sticks, die Link oder die Kamera von selbst bewegen (Drift). Aus: nur die des Spiels."},

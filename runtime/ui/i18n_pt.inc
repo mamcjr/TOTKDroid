@@ -540,3 +540,7 @@
  "Nenhum save do TOTK ali: escolha a pasta que tem slot_00, slot_01... e option.sav."},
 {"That didn't work: %s",
  "Não deu certo: %s"},
+{"Stick dead zone",
+ "Zona morta dos analógicos"},
+{"A stick held this close to the centre counts as centred, for worn sticks that move Link or the camera on their own (drift). Off: only the game's own.",
+ "Um analógico tão perto do centro conta como centralizado, para analógicos gastos que movem o Link ou a câmera sozinhos (drift). Desligada: só a do próprio jogo."},
