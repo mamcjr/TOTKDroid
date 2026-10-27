@@ -249,6 +249,41 @@ sumiu", e "é algo somente nas cutscenes".
   (`LARECOMP_DUMP_FS=` os hashes acima) e os valores reais (`LARECOMP_DEBUG_RAW_PASSES=1`) do buffer de luz e da
   profundidade reduzida num plano com e num sem parede.
 
+## As melhorias do BOTWRecompAndroid de 25 a 27/10 (2026-10-27)
+
+48 commits trazidos por cherry-pick (`git remote botwl` = `../BOTWRecomp`, histórico comum até `9d9057e`; o `-x` de
+cada um aponta o original), `088b04f..6030de0`. O que entrou:
+- **Correções:** coordenadas de textura dos vertex shaders arredondadas a 1/256 de texel, como o Switch pesa (as
+  rachaduras pontilhadas do terreno do BOTW, `9c3a0f3`); write-backs que esperam um slot em vez de se perder, e 128
+  slots pequenos ao lado dos 32 grandes (a CPU não espera mais a GPU a cada dois quadros); chinês como zh-Hans /
+  zh-Hant (zh-CN / zh-TW davam texto japonês); MapMemory confere os endereços; a janela esperada quando o jogo abre com
+  a tela travada; relatórios de crash com os registradores do jogo.
+- **Desempenho:** a resolução de saída Auto (no máximo 1080 linhas em telas mais altas; o present escala); GLSL mais
+  barato para o driver (do SavageWindRecomp); a thread de render calcula os alvos escritos de um draw uma vez só.
+- **Build do código no celular:** o gerador com 63 % menos memória, sem UBSan / stack protector / debug info do zig,
+  o arquivo de uma função gigante a -O0 e sozinho, compiladores conforme a memória livre e a temperatura, retomada de
+  onde parou, um serviço em primeiro plano (tela desligada), de volta à ordem do gerador (o "maior primeiro" do
+  LAS-Plus derrubava builds em celulares com pouca memória: issue #17 do BOTW).
+- **App:** giroscópio do celular (ou do controle) como sensor de movimento do controle, com o viés em repouso tirado;
+  toque estilo FPS (câmera arrastando, analógicos só ao tocar); zona morta dos analógicos do controle; menus em 11
+  línguas, seguindo a língua do jogo; Configurações > Saves (exportar como .zip, importar de .zip ou de uma pasta de
+  emulador - o layout do TOTK: `slot_00/` ... com `progress.sav`); FXAA; o diálogo de erro de driver (instalar um ou
+  usar o do sistema); a versão do app no canto da tela inicial; a configuração de jogo que confere o romfs (no TOTK:
+  304.243 arquivos e três arquivos-chave, sem `System/Version.txt`); diagnósticos (`LARECOMP_LOG_GPU_IDLE`,
+  `LARECOMP_FRAME_TIMELINE`, `LARECOMP_LOG_STALE_UPLOAD`, `LARECOMP_UCLAMP_MIN`, `LARECOMP_TEST_CRASH`, o dump da
+  textura vigiada).
+- **Sync lag** (descoberta do MacNativeGames no TOTK: a espera do jogo pela sua cerca mais nova vai para a do quadro
+  anterior, e o próximo quadro sobrepõe a GPU): a opção em Vídeo veio, mas **desligada por padrão** no TOTK - no BOTW
+  ela deu água branca e as pernas do Link afundando no chão; falta testar aqui.
+
+Ficou de fora: o que é só do BOTW (versões do app, DLC, 1.9.0, o mapa do relógio Zepp, a resolução dinâmica pelos
+contadores - o TOTK prende a faixa direto), a importação do heap só no Xclipse (o TOTK a mantém desligada em todo
+celular; o driver da Qualcomm nem a oferece) e documentação do BOTW. O gerador novo produz **o mesmo código** do
+TOTK 1.4.3 (nenhum arquivo reescrito: a correção da tabela de salto não pega nenhuma função dele). Testado no PC:
+o app compila, `tools/test_translate_ops.sh` 31 casos sem falha, o fuzz de GLSL (1.500 programas) só as falhas
+antigas de `textureGather`. Falta no celular: os recursos novos e as traduções (as frases só do TOTK seguem em inglês
+nas línguas novas).
+
 ## Diferenças em relação ao BOTW
 
 | # | Diferença | Onde | Gravidade |
