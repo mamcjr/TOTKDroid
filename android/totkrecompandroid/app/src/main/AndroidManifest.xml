@@ -13,6 +13,8 @@
     <application
         android:label="TOTKRecompAndroid"
         android:icon="@mipmap/ic_launcher"
+        android:appCategory="game"
+        android:isGame="true"
         android:allowBackup="false"
         android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
         android:enableOnBackInvokedCallback="false"
