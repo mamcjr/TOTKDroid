@@ -550,7 +550,7 @@ extern "C" JNIEXPORT void JNICALL Java_com_totkrecompandroid_TOTKRecompAndroidAc
     if (g_settings.log_file) android_log_file(true);  // (the file moves to the folder, with this run's lines so far)
 }
 
-// Saves (Settings > Saves; BOTWRecompAndroidActivity importSave / exportSave): this version's save_0, and the result
+// Saves (Settings > Saves; TOTKRecompAndroidActivity importSave / exportSave): this version's save_0, and the result
 static std::string g_save_msg;  // (g_lock) the last import's or export's, shown under the buttons
 static bool g_save_failed, g_save_busy;
 
@@ -571,9 +571,9 @@ extern "C" JNIEXPORT void JNICALL Java_com_totkrecompandroid_TOTKRecompAndroidAc
         if (d.empty()) snprintf(msg, sizeof msg, "%s", tr("Saves imported."));
         else snprintf(msg, sizeof msg, tr("Saves imported. The ones before are kept beside them as %s."), d.c_str());
         break;
-    case 1: snprintf(msg, sizeof msg, tr("Saves exported to the folder \"%s\"."), d.c_str()); break;
+    case 1: snprintf(msg, sizeof msg, tr("Saves exported to %s."), d.c_str()); break;
     case 2: msg[0] = 0; break;
-    case 3: snprintf(msg, sizeof msg, "%s", tr("No TOTK save there: choose the folder that holds slot_00, slot_01... and option.sav.")); break;
+    case 3: snprintf(msg, sizeof msg, "%s", tr("No TOTK save there: look for the one that holds slot_00, slot_01... and option.sav.")); break;
     default: snprintf(msg, sizeof msg, tr("That didn't work: %s"), d.c_str()); break;
     }
     pthread_mutex_lock(&g_lock);
@@ -1453,11 +1453,12 @@ static void prelaunch_tab(float sc) {
         bool failed = g_save_failed, sbusy = g_save_busy;
         pthread_mutex_unlock(&g_lock);
         ImGui::PushTextWrapPos(0);
-        ImGui::TextDisabled("%s", tr("The saves are in the app's own folder, out of file managers' reach. Export copies this "
-                                     "version's saves to a folder you choose (to keep, edit or move them). Import replaces "
-                                     "them with the saves in a folder you choose - one exported here, or an emulator's (the "
-                                     "folder with slot_00, slot_01... and option.sav); the ones before are kept beside them. A save "
-                                     "from a newer version of the game may not load in an older one."));
+        ImGui::TextDisabled("%s", tr("The saves are in the app's own folder, out of file managers' reach. Export saves this "
+                                     "version's as one .zip where you choose (to keep, edit, send or move them). Import "
+                                     "replaces them with the saves in a .zip - one exported here, or any holding slot_00, "
+                                     "slot_01... and option.sav; Import from folder takes an emulator's save folder. The ones before "
+                                     "are kept beside them. A save from a newer version of the game may not load in an "
+                                     "older one."));
         if (sbusy) ImGui::BeginDisabled();
         if (ImGui::Button(tr("Export saves"))) {
             pthread_mutex_lock(&g_lock);
@@ -1471,6 +1472,13 @@ static void prelaunch_tab(float sc) {
             g_save_busy = true, g_save_msg.clear();
             pthread_mutex_unlock(&g_lock);
             android_call("pickSaveImport");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Import from folder"))) {
+            pthread_mutex_lock(&g_lock);
+            g_save_busy = true, g_save_msg.clear();
+            pthread_mutex_unlock(&g_lock);
+            android_call("pickSaveImportFolder");
         }
         if (sbusy) ImGui::EndDisabled();
         if (!msg.empty()) {
