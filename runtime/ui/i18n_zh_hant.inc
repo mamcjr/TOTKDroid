@@ -545,3 +545,5 @@
  "那裡沒有 TOTK 存檔：請找包含 slot_00、slot_01... 和 option.sav 的那個。"},
 {"Import from folder",
  "從資料夾匯入"},
+{"The game starts its next frame while the GPU still finishes the last one: a few more fps. What the game reads back from the GPU then comes a frame late, and Link's legs can sink into the ground while he stands still. Turn it off if that bothers you. Applies at once.",
+ "GPU 還在完成上一幀時，遊戲就開始下一幀：fps 會高一些。代價是遊戲從 GPU 讀回的結果會晚一幀，林克站著不動時腿可能陷進地面。介意的話請關閉。立即生效。"},

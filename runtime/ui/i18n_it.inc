@@ -545,3 +545,5 @@
  "Nessun salvataggio di TOTK qui: cerca quello che contiene slot_00, slot_01... e option.sav."},
 {"Import from folder",
  "Importa da cartella"},
+{"The game starts its next frame while the GPU still finishes the last one: a few more fps. What the game reads back from the GPU then comes a frame late, and Link's legs can sink into the ground while he stands still. Turn it off if that bothers you. Applies at once.",
+ "Il gioco inizia il fotogramma successivo mentre la GPU finisce ancora il precedente: qualche fps in più. Ciò che il gioco rilegge dalla GPU arriva allora con un fotogramma di ritardo, e le gambe di Link possono affondare nel terreno quando è fermo. Disattivalo se ti dà fastidio. Si applica subito."},

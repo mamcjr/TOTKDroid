@@ -545,3 +545,5 @@
  "Dort ist kein TOTK-Spielstand: Suche den mit slot_00, slot_01... und option.sav."},
 {"Import from folder",
  "Aus Ordner importieren"},
+{"The game starts its next frame while the GPU still finishes the last one: a few more fps. What the game reads back from the GPU then comes a frame late, and Link's legs can sink into the ground while he stands still. Turn it off if that bothers you. Applies at once.",
+ "Das Spiel beginnt das nächste Bild, während die GPU das vorige noch fertigstellt: ein paar fps mehr. Was das Spiel von der GPU zurückliest, kommt dann ein Bild zu spät, und Links Beine können im Stand im Boden versinken. Schalte es aus, wenn dich das stört. Gilt sofort."},

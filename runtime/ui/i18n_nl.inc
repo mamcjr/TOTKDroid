@@ -545,3 +545,5 @@
  "Daar staat geen TOTK-opslag: zoek die met slot_00, slot_01... en option.sav."},
 {"Import from folder",
  "Uit map importeren"},
+{"The game starts its next frame while the GPU still finishes the last one: a few more fps. What the game reads back from the GPU then comes a frame late, and Link's legs can sink into the ground while he stands still. Turn it off if that bothers you. Applies at once.",
+ "Het spel begint aan het volgende beeld terwijl de GPU het vorige nog afmaakt: een paar fps meer. Wat het spel van de GPU terugleest komt dan een beeld te laat, en Links benen kunnen in de grond zakken als hij stilstaat. Zet het uit als dat stoort. Geldt meteen."},
