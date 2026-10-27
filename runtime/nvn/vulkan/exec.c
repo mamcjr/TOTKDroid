@@ -4861,6 +4861,23 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
             : bound && renderer_format_is_depth(bound->format) ? vk_sampler_point(sd)  // (a depth read: one texel)
             : vk_sampler_plain(sd);
     }
+    {   // (diagnosis) LARECOMP_VS_NEAREST=1: the vertex stage's textures through a nearest, clamped sampler - the terrain
+        // reads its heights there, and a seam between two tiles that closes with it comes from the filtering
+        static int nearest = -1;
+        static VkSampler ns;
+        if (nearest < 0) nearest = getenv("LARECOMP_VS_NEAREST") != NULL;
+        if (nearest && stage == 0 && !st_->shadow) {
+            if (!ns) {
+                VkSamplerCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST,
+                                          .minFilter = VK_FILTER_NEAREST, .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                                          .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                          .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                          .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .maxLod = 16};
+                vkCreateSampler(g_vk.dev, &ci, NULL, &ns);
+            }
+            smp = ns;
+        }
+    }
     if (!view) view = vk_dummy_view(st_->type);
     if (!smp) smp = vk_default_sampler(true);
     *out = (VkDescriptorImageInfo){smp, view, VK_IMAGE_LAYOUT_GENERAL};
