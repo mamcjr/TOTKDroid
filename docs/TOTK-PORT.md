@@ -284,6 +284,35 @@ o app compila, `tools/test_translate_ops.sh` 31 casos sem falha, o fuzz de GLSL 
 antigas de `textureGather`. Falta no celular: os recursos novos e as traduções (as frases só do TOTK seguem em inglês
 nas línguas novas).
 
+## As novidades do BOTWRecompAndroid de 27 e 28/10 (2026-10-28)
+
+Mais 16 commits do BOTW (depois do `4572f06`, até o 0.2.3-beta), por cherry-pick:
+- **Imagem:** os gathers arredondados a 1/256 de texel, como o Switch (os pontos escuros na grama do BOTW: a oclusão
+  de meia resolução pegava o 2x2 de outro pixel no Adreno); os deslocamentos .RS / .LS e as metades do IADD3 (do
+  SavageWindRecomp; divisões por constante); write-backs aplicados na ordem da fila (a água branca e os pés do Link
+  afundando, #43); o sync lag só depois de 300 quadros com o mundo na tela (cada carregamento roda sem ele); a arena
+  de memória global e as leituras de volta em memória coerente (o tipo "cached" do Mali não é).
+- **Desempenho:** o buffer de constantes de 64 KB atualizado por draw só nas linhas reescritas (a leitura no lugar
+  veio desligada por padrão, como no BOTW).
+- **Arquivos do jogo no lugar** (Arquivos do jogo > Usar no lugar): o romfs é lido da pasta escolhida, sem a cópia de
+  ~17 GB (o runtime monta a imagem em memória); pede o acesso a todos os arquivos. Mods no lugar também. A parte do DLC
+  do BOTW ficou de fora (o TOTK não tem).
+- **Mods** que acrescentam arquivos e pastas que o jogo não tem.
+- **Saves** que outro app colocou (um gerenciador com root, um editor): copiados para o app, ou uma mensagem do que
+  fazer em vez do svcBreak. **Memória do jogo na GPU** só a partir de ~7 GB de RAM. O giroscópio de um controle só
+  substitui o do celular quando se mexe.
+- **Build no celular:** as flags no carimbo de retomada; uma biblioteca com símbolos faltando é compilada de novo.
+- **Diagnóstico:** `LARECOMP_PROF_SVC_TID` com duas threads, `LARECOMP_LOG_FS_CB`, `LARECOMP_DEBUG_PICK` (o histórico
+  de um pixel, em coordenadas da cena 1600x896 do TOTK; o `LARECOMP_DEBUG_SWEEP` do TOTK continua ao lado).
+
+Ficou de fora: o **modo nativo** (`LARECOMP_NATIVE=1`: o código ARM64 do jogo rodando direto na CPU, sem compilar o
+código do jogo - no BOTW chega à tela título e ao mundo; para o TOTK seria preciso refazer em stubs os patches do
+`tools/patches.py`, e em 2026-10-24 a decisão foi seguir recompilando); as cutscenes a 60 fps e o aspecto livre (do
+BOTW); o arredondamento do passo das partículas do BOTW (lê `c[10][0x2c]` dos shaders de efeito dele - no TOTK essa
+constante pode ser outra coisa). Testado no PC: o app compila, `tools/test_translate_ops.sh` 31 casos sem falha, o
+fuzz de GLSL só as falhas antigas de `textureGather`. Falta no celular, principalmente o "usar no lugar" com os 304 mil
+arquivos do TOTK.
+
 ## Diferenças em relação ao BOTW
 
 | # | Diferença | Onde | Gravidade |
