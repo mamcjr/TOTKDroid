@@ -5577,7 +5577,7 @@ static int sweep_pass = -1;  // (that pass's number in this debug frame)
 int vk_debug_sweep_pass(void) { return sweep_want() ? sweep_pass : -2; }
 
 // (debugging, from SavageWindRecomp's SAVAGEWIND_DEBUG_PICK, MIT) LARECOMP_DEBUG_PICK=<x>,<y>[;<x>,<y>...] (up to 4
-// points, in the game's 1600x900 coordinates): in a debug frame each draw copies those pixels of its target afterwards
+// points, in the scene's 1600x896 coordinates - TOTK's; BOTW's 1600x900): in a debug frame each draw copies those pixels of its target afterwards
 // (ending its pass), and vk_pick_report logs per point the draws that changed it ("[pick]": the last one is what the
 // frame shows there). LARECOMP_DEBUG_PICK_RT=<i>: each pass's target i instead of the first (a G-buffer's other ones).
 typedef struct { uint64_t vs, fs, hash; void *img; uint32_t w, h, fmt, no; } PickRec;
@@ -5628,7 +5628,7 @@ static void pick_after_draw(void) {
     VkCommandBuffer cb = vk_cmd();
     vk_full_barrier(cb);
     for (int k = 0; k < pick.npt; k++) {
-        uint32_t x = (uint32_t)pick.pt[k][0] * b->width / 1600 >> level, y = (uint32_t)pick.pt[k][1] * b->height / 900 >> level;
+        uint32_t x = (uint32_t)pick.pt[k][0] * b->width / 1600 >> level, y = (uint32_t)pick.pt[k][1] * b->height / 896 >> level;
         memset(pick.ptr + ((size_t)pick.n * 4 + k) * 16, 0, 16);
         if (x >= level_extent(b->width, level) || y >= level_extent(b->height, level)) continue;
         VkBufferImageCopy c = {.bufferOffset = ((VkDeviceSize)pick.n * 4 + k) * 16,
@@ -5648,7 +5648,7 @@ void vk_pick_report(void) {
     if (!pick.n) return;
     renderer_flush();
     for (int k = 0; k < pick.npt; k++) {
-        LOG("[pick] point %d (%d,%d of 1600x900): draws that changed it\n", k, pick.pt[k][0], pick.pt[k][1]);
+        LOG("[pick] point %d (%d,%d of 1600x896): draws that changed it\n", k, pick.pt[k][0], pick.pt[k][1]);
         for (int i = 0; i < pick.n; i++) {
             const uint8_t *v = pick.ptr + ((size_t)i * 4 + k) * 16;
             int j = i - 1;  // the previous draw into the same image

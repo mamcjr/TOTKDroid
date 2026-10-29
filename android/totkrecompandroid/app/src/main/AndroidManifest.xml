@@ -16,7 +16,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Game files used in place (Game Files > Game files: Use them in place): the picked romfs/ read by its path, no
-         16 GB copy - only asked for when that's chosen (BOTWRecompAndroidActivity.pickGameFolderInPlace) -->
+         17 GB copy - only asked for when that's chosen (TOTKRecompAndroidActivity.pickGameFolderInPlace) -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
 
     <application

@@ -28,7 +28,7 @@ static bool is_off(const char *name) {  // (mods_off: names separated by '|')
 static int by_name(const void *a, const void *b) { return strcmp(((const ModInfo *)a)->name, ((const ModInfo *)b)->name); }
 
 // A mod's folder: mods/<name>, or the folder mods/<name>.link names (a mod used in place - Mods > Import a mod folder
-// with Game Files > Game files: Use them in place; BOTWRecompAndroidActivity.importMod). false: neither is there.
+// with Game Files > Game files: Use them in place; TOTKRecompAndroidActivity.importMod). false: neither is there.
 static bool mod_base(const char *name, char *out, size_t cap) {
     struct stat sb;
     snprintf(out, cap, "mods/%s", name);
