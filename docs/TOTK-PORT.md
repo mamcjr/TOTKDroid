@@ -404,17 +404,30 @@ O usuário, jogando: "as paredes estão com uma nevoa [...] a agua esta escura",
 sem roupa; `totk_spot.sh` no scratchpad: o save mais novo, A para carregar, nenhum movimento) tudo é névoa
 verde-azulada e só o Link tem luz.
 - `TU_DEBUG=nolrz`, `LARECOMP_FEEDBACK_COPY=1`, `LARECOMP_NO_EARLY_Z=1`: nada muda.
-- Dump do quadro (`LARECOMP_DEBUG_RAW_PASSES=1`, valores lidos dos `.raw`): a geometria está no G-buffer (normais
-  `056`/`057`, os alvos `083`-`096`), mas a cena iluminada (`097`, B10G11R11) é névoa pura: média (0,022; 0,055;
-  0,049), e o mínimo da tela é a cor da névoa. O buffer de luz em meia resolução (`106`-`108`, RGBA16F 640x358) é zero
-  exato; `109` quase. A cena roda a 1600x896 no jogo (1280x717 aqui).
+- Dump do quadro (`LARECOMP_DEBUG_RAW_PASSES=1`, valores lidos dos `.raw`; a cena é 1600x896 no jogo, 1280x717
+  aqui): a geometria está no G-buffer, mas a cena iluminada (`097`, B10G11R11) é névoa pura: média (0,022; 0,055;
+  0,049), e o mínimo da tela é a cor da névoa. (O alvo de 800x448 RGBA16F zerado, `@35c5e6c00`, não é luz: é o de
+  partículas / efeitos em meia resolução - e ocupa a memória do alvo 2 do G-buffer, 1600x896 RGBA8, no mesmo endereço.)
+- A iluminação é diferida: o G-buffer de 6 alvos (`@35cb5ee00` bandeiras de material, `@35c06ea00` f0x38,
+  `@35c5e6c00`, `@35b9d8200` f0x3f - a cena, onde a luz se soma ...); `13fe41b7645b246c` lê as bandeiras e marca o
+  stencil; 11 passes de tela cheia, um por classe de material (`275e821b13b0d814`, `71c7ef99e317a9bd`,
+  `321fa39d58ff156e`, `c4eea0f30814163d`, `ccd909d10be0ffa5`, `70586f818c71a3fa`, `0685d1c554a90936`,
+  `54a5255cdbe96206`, `f22828104512b59a`, `2178807956b82cf1`, `7bf74eff0a7d4935`; stencil `010003`, blend aditivo),
+  somam a luz em `@35b9d8200`. Leem o G-buffer, a profundidade, as máscaras de meia resolução `@35e218200`,
+  `@35dbd7c00`, `@35dd67e00`, `@35e3a8400`, `@35e87a200` (200x112) e a sonda de ambiente 64x64 `@3b647b000`.
+- A sonda de ambiente (capturada no quadro, passes 64x64 `008`-`019`) sai normal: média (0,21; 0,20; 0,19), nenhum
+  pixel zero. Suspeito principal: a máscara `@35e218200` (`092`-`096`), que todo passe de luz lê - nas paredes
+  R 1, G 0,22, B 1 e **A 0**, no Link outros valores. Se o alfa for oclusão / visibilidade, apaga a luz da parede.
 - Não é o volume 3D (32x32x32, `[vk] 3D target`): `LARECOMP_LOG_3D_RT=1` mostra cada fatia e cada mip num draw seu, e
   nenhum vertex shader escreve o layer (o tradutor descarta o atributo `0x64`; agora marca `writes_layer` e o log diz
   quando).
 - MacNativeGames: nada sobre isso nos issues / PRs / docs do TOTK nem do iPhone. O mais próximo é o #188 (terreno
   escuro quando uma escrita de volta da GPU era pulada), que o `502088f` do BOTW (já aqui) cobre do nosso lado.
-- Próximo: achar os draws que deveriam escrever no buffer de luz e o que leem (`LARECOMP_DUMP_FS` dos shaders de luz
-  com os bancos de constantes, `LARECOMP_LOG_CBUF`), e a luz ambiente da parede (o Link tem a sua).
+- Próximo (no celular): (1) o GLSL dos 11 passes de luz e dos que escrevem as máscaras (`LARECOMP_DUMP_FS=`
+  os hashes acima + `c0f9071f5ef7027b`, `05a99cd0aa4bcffb`, `899e096727d434c2`, `de9787afcc1963cf`,
+  `b99e27201422cf02`, `8b67d5ac78f78619`): o que cada canal da máscara é; (2) o mesmo dump num lugar onde as paredes
+  saem certas - a caverna dos saves de 26/10 (slot_00 a 02): uma pasta-semente feita pelo adb só com um desses slots
+  (legível: `own_save` faz a cópia do app) em `LARECOMP_SAVE_SEED` - e comparar a máscara e os passes de luz.
 
 ## Diferenças em relação ao BOTW
 
