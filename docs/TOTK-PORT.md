@@ -429,6 +429,31 @@ verde-azulada e só o Link tem luz.
   saem certas - a caverna dos saves de 26/10 (slot_00 a 02): uma pasta-semente feita pelo adb só com um desses slots
   (legível: `own_save` faz a cópia do app) em `LARECOMP_SAVE_SEED` - e comparar a máscara e os passes de luz.
 
+## O que trabalhar - o vídeo do usuário (2026-10-29)
+
+Gravação do usuário, 164 s (`Screenrecorder-2026-10-29-09-13-39-739.mp4`, cópia em `android/out/uservid/`, um
+quadro por segundo em `f*.jpg` e folhas em `sheet*.jpg`): o despertar, a caverna até a saída, o salto das ilhas, o
+lago e a Grande Ilha Celestial. Em ordem de prioridade:
+
+1. **Paredes só névoa (as cavernas inteiras, 0-62 s):** tudo verde-azulado, só o Link iluminado (acima, "As paredes
+   só névoa"). Na saída da caverna (62 s), com luz do sol, a pedra volta ao normal: o que falta é a luz do interior.
+2. **Água preta (lago 130-150 s, poças da caverna 6-40 s):** a superfície sai preta, sem reflexo nem refração; o Link
+   dentro da água aparece recortado / posterizado (145 s). Provavelmente a mesma causa que a das paredes (a água lê
+   a cena iluminada e a sonda de ambiente) ou a cópia da cena para a refração.
+3. **Respingos brancos opacos (6 s, 27 s, 36 s, 136-147 s):** a espuma e os anéis de onda saem brancos e sólidos; o
+   mergulho no lago (136 s) enche a tela de manchas brancas. Partículas com a cor / alfa errados (o mesmo buffer de
+   efeitos em meia resolução que ocupa a memória do alvo 2 do G-buffer?).
+4. **Nuvens em blocos (salto, 72-125 s):** quadrados de 8-16 px nas nuvens, com o terreno de baixo aparecendo pelos
+   buracos - as nuvens volumétricas em resolução baixa reconstruídas por blocos (temporal / checkerboard) que não
+   enchem. Nas ilhas vistas através delas também.
+5. **Desempenho no salto:** 23-25 fps, com a thread de render em 29-31 ms (o gargalo é a CPU da tradução, não a GPU:
+   "waiting on the GPU" 13-17%). No chão da ilha, 27-30 fps.
+6. Menores: o retângulo translúcido sobre a folha de nenúfar (145 s); o overlay mostrou "Power 51.8 W" (leitura do
+   sensor de potência, não do jogo).
+
+O que está certo no vídeo: a saída da caverna e a Grande Ilha Celestial (árvores, sombras, céu), o logo do título,
+o inventário e os tutoriais, a câmera e o controle no salto.
+
 ## Diferenças em relação ao BOTW
 
 | # | Diferença | Onde | Gravidade |
