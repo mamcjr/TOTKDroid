@@ -325,7 +325,29 @@ Os 15 patches do `tools/patches.py` viram stubs (`runtime/native.c` `fixes[]`, a
 a escala da resolução dinâmica e as três gravações da faixa, o passo do mundo (a leitura da razão, as três instruções
 seguintes descartadas, o intervalo), o relógio do pano e do cabelo (dois em linha, dois nos argumentos da chamada) e
 o tamanho da cena - cada um um handler no `Cpu` que faz o mesmo que o C do código gerado. No BOTW o nativo chegou à
-tela título e ao mundo, sem ganho de fps (51-52 contra 55 recompilado). **No TOTK: compila; não rodado ainda.**
+tela título e ao mundo, sem ganho de fps (51-52 contra 55 recompilado).
+
+**No TOTK, no celular (2026-10-28, Turnip, cópia do save na caverna, 200 s de roteiro):** roda. Os 15 patches
+conferem e entram (`main: 0 svc, 814 TLS, 0 counter reads rewritten, 15 fixes; stubs ... (80 KB)`; `sdk: 58 svc, 129
+TLS, 43 counter reads rewritten`), o save carrega, Link anda e escala, a faixa da resolução dinâmica fica segura.
+Contra o recompilado no mesmo roteiro, os dois a 30 fps travados:
+
+| | nativo | recompilado |
+|---|---|---|
+| média dos intervalos de 2 s (de 96-97) | 29,1 fps (82 a 30) | 29,7 fps (85 a 30) |
+| thread do jogo (overlay, 4 capturas) | 0,9-1,3 ms | 0,7-0,9 ms |
+| thread de render | 16,0-19,5 ms | 13,8-19,1 ms |
+| CPU do app | 16-19% | 19-24% |
+
+Sem diferença que se separe do clock da CPU (1152 a 1785 MHz entre as capturas): o gargalo é a thread de render, onde
+fica a tradução NVN -> Vulkan, não o código do jogo. As quedas a mais do nativo são do começo (compilação de shaders
+no carregamento). O ganho dele continua sendo não precisar do `totkgame.so`.
+
+Testes no celular: a pasta de save do teste tem de ser feita pelo app (`LARECOMP_SAVE_DIR` para uma pasta nova +
+`LARECOMP_SAVE_SEED` com o save do jogador, só lido): uma pasta feita pelo adb agora para no `own_save` (`fs.c`, do
+BOTW #77: arquivos de outro dono, e o app não consegue trocar a pasta pela sua cópia, errno 13). E o app novo recusa
+um `totkgame.so` de antes de uma mudança no gerador (`GAMELIB_ID`): instalar o app pede regerar e compilar o código
+do jogo junto (aqui: `ec5c256`/`8c3e54d` mudaram o id; a regeração reescreveu 1 chunk, 3 min no total).
 
 ## Diferenças em relação ao BOTW
 
