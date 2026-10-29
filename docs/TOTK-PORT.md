@@ -305,13 +305,27 @@ Mais 16 commits do BOTW (depois do `4572f06`, até o 0.2.3-beta), por cherry-pic
 - **Diagnóstico:** `LARECOMP_PROF_SVC_TID` com duas threads, `LARECOMP_LOG_FS_CB`, `LARECOMP_DEBUG_PICK` (o histórico
   de um pixel, em coordenadas da cena 1600x896 do TOTK; o `LARECOMP_DEBUG_SWEEP` do TOTK continua ao lado).
 
-Ficou de fora: o **modo nativo** (`LARECOMP_NATIVE=1`: o código ARM64 do jogo rodando direto na CPU, sem compilar o
-código do jogo - no BOTW chega à tela título e ao mundo; para o TOTK seria preciso refazer em stubs os patches do
-`tools/patches.py`, e em 2026-10-24 a decisão foi seguir recompilando); as cutscenes a 60 fps e o aspecto livre (do
+O **modo nativo** veio depois, a pedido do usuário (ver abaixo). Ficou de fora: as cutscenes a 60 fps e o aspecto livre (do
 BOTW); o arredondamento do passo das partículas do BOTW (lê `c[10][0x2c]` dos shaders de efeito dele - no TOTK essa
 constante pode ser outra coisa). Testado no PC: o app compila, `tools/test_translate_ops.sh` 31 casos sem falha, o
 fuzz de GLSL só as falhas antigas de `textureGather`. Falta no celular, principalmente o "usar no lugar" com os 304 mil
 arquivos do TOTK.
+
+## Modo nativo: o código do jogo direto na CPU (2026-10-28)
+
+Do BOTWRecompAndroid (`053e80a`, `3678eda`, `b451ec4`, `ba93baa`; o estudo dele em `docs/botw/EXECUCAO-NATIVA.md`):
+com Vídeo > "Código nativo do jogo (experimental)" ou, na configuração dos arquivos, "Código do jogo: Nativo", o
+`main` e o `sdk` do TOTK rodam como estão, sem o `totkgame.so` - sem os ~20 min de compilação do código do jogo.
+Depois de carregados são reescritos: `svc` vira um stub para `native_svc_gate`, as leituras e escritas de
+`tpidr`/`tpidrro` vão para o `Cpu` da thread, `cntpct` vira `cntvct`; as funções do runtime (NVN, imports) ficam nos
+slots HLE como código que entra em `native_hle_gate`. No TOTK: ~63 KB de stubs no `main` (814 leituras de TLS, nenhum
+`svc`) e ~14 KB no `sdk`.
+
+Os 15 patches do `tools/patches.py` viram stubs (`runtime/native.c` `fixes[]`, a palavra original conferida antes):
+a escala da resolução dinâmica e as três gravações da faixa, o passo do mundo (a leitura da razão, as três instruções
+seguintes descartadas, o intervalo), o relógio do pano e do cabelo (dois em linha, dois nos argumentos da chamada) e
+o tamanho da cena - cada um um handler no `Cpu` que faz o mesmo que o C do código gerado. No BOTW o nativo chegou à
+tela título e ao mundo, sem ganho de fps (51-52 contra 55 recompilado). **No TOTK: compila; não rodado ainda.**
 
 ## Diferenças em relação ao BOTW
 
