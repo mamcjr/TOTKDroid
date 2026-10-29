@@ -349,6 +349,73 @@ BOTW #77: arquivos de outro dono, e o app não consegue trocar a pasta pela sua 
 um `totkgame.so` de antes de uma mudança no gerador (`GAMELIB_ID`): instalar o app pede regerar e compilar o código
 do jogo junto (aqui: `ec5c256`/`8c3e54d` mudaram o id; a regeração reescreveu 1 chunk, 3 min no total).
 
+## 60 fps e as cutscenes (2026-10-28/29)
+
+A pedido do usuário ("é possivel liberar os 60 fps?"). Vídeo > Taxa de quadros passa a ter, no TOTK, Auto (30 / 60),
+30 e 60 (antes só o BOTW 1.8.2; o padrão continua 30). No recompilado (`tools/patches.py`) e no nativo
+(`runtime/native.c`), os mesmos sítios:
+
+- **O controlador de quadros** (`main+0x2db180`, que chama `nvnWindowSetPresentInterval` de `0x2db2e8`): os 7 sítios
+  do MacNativeGames (`0x2db204` ... `0x2db36c`) tomam como menor intervalo 1 em vez do do jogo (`[x20]`, 2). No
+  recompilado cada sítio leva as duas instruções (o C do próprio lifter para cada uma) escolhidas em tempo de execução
+  por `rt_fps60()` (Auto ou 60; `LARECOMP_FPS60=0/1` força); no nativo, `w8 = 1` antes do primeiro `cmp` faz o que os
+  `cmp` / `csel` com #1 deles fazem (4 stubs bastam, sem calcular flags).
+- **As transparências** (4 sítios, `fcvtzs` de razão x 2,1): um passo positivo é pelo menos 1 (a 60 a razão é ~0,5 e
+  um quadro mais curto dava 0: objetos presos invisíveis).
+- **Auto:** a escolha do próprio controlador - a 60 onde o quadro cabe. No celular (POCO F7 Ultra, Turnip, a caverna)
+  ele tenta 1 e volta a 2 em menos de 1 s (6 vezes em 200 s, 30,8 fps de média): o trabalho medido do quadro inclui as
+  esperas da thread de render e da GPU.
+- **60:** as apresentações a cada vsync (`nvnWindowSetPresentInterval` força 1; o limitador usa 1 seja o que for que
+  ficou na janela). Na caverna: 35-40 fps (GPU + thread de render de ~18 ms; com a cena a 960x540,
+  `LARECOMP_RENDER_RES`, 42 fps). O mundo, o pano e as transparências andam pelo tempo medido: sem câmera lenta.
+
+**As cutscenes.** A 60 o usuário as viu aceleradas; seguradas a 30 por baixo, em câmera lenta. Parte da animação de
+uma cutscene anda pelo intervalo em que o jogo *acredita* (como a da interface do BOTW, MacNativeGames #103:
+`max(intervalo, 1) x 0,5` por quadro), não pelo tempo medido: o jogo acreditando em 2 com quadros a 50-60 fps (uma
+cutscene é leve) corria; acreditando em 1 com apresentações a 30, ia devagar. A duração total da abertura não muda
+(42 s a 30 e a 60): a linha do tempo é a certa, a animação não. Agora, durante uma cutscene, o jogo acredita em 2 e
+apresenta a 30, como no Switch:
+- **Detectar:** `LARECOMP_FNPROF` (agora com `LARECOMP_FNPROF_KEEP=1`: um arquivo por intervalo, as contagens de cada
+  trecho por diferença) na abertura de um jogo novo achou ~50 funções que rodam uma vez por quadro só durante a
+  cutscene (nenhuma no título nem em 2 min de gameplay). Quatro, de três cadeias de chamada diferentes (`0x45c700`,
+  `0x2b23c7c`, `0x42c3bc`, `0xa5a188`; `0x44196c` é um `ret`), marcam o quadro na entrada (`rt_cutscene_tick`):
+  cutscene enquanto uma delas rodou nos últimos 200 ms. `LARECOMP_CUTSCENE_FPS30=0` desliga.
+- **O jogo acredita em 2:** `main+0x2db238` (`mov w8, #0x3c`), onde todo caminho do controlador chega com a escolha em
+  `w21` antes de gravá-la e passá-la à janela: `rt_interval_pick` a faz pelo menos 2 durante a cutscene.
+- **Apresenta a 30:** o limitador espera 2 vsyncs, e o 60 forçado não vale durante ela.
+- Medido (abertura a 60): cutscene 08:28:04-08:28:50 a 30, o jogo pedindo 2 ao começar e 1 ao acabar; depois, 36-39
+  fps. Só a abertura foi vista; outras cutscenes ainda não.
+- O travamento depois da primeira cutscene (Link parado, a segunda não vem) acontece a 30 também: o jogo espera o
+  jogador andar.
+
+`LARECOMP_LOG_FSSEEN=1` (cada fragment shader na primeira vez e quando volta depois de 3 s sem desenhar) achou a cadeia
+de profundidade de campo (`d076cb66...`, `27697787...`, `64d33b60...`, `1a0e22d6...`, `a6a2c498...`, `6c864c34...`)
+só nas cutscenes - mas ela some por mais de 3 s em alguns planos: não serve de detector.
+
+O menu de taxa de quadros na tela inicial (antes do jogo carregar, versão 0) escondia o 60 e voltava um 60 salvo para
+30: lá vale a versão da pasta de dados, 1.4.3.
+
+**Modo nativo a 60:** um travamento no carregamento (pc fora do `libmain.so`, talvez no Turnip), uma vez; não repetido.
+
+## As paredes só névoa (2026-10-29) - aberto
+
+O usuário, jogando: "as paredes estão com uma nevoa [...] a agua esta escura", a 30 e a 60. É o sintoma das cutscenes
+(26/10), agora em gameplay e sempre no mesmo lugar: com a cópia do autosave dele (ruínas com um anel de pedra, Link
+sem roupa; `totk_spot.sh` no scratchpad: o save mais novo, A para carregar, nenhum movimento) tudo é névoa
+verde-azulada e só o Link tem luz.
+- `TU_DEBUG=nolrz`, `LARECOMP_FEEDBACK_COPY=1`, `LARECOMP_NO_EARLY_Z=1`: nada muda.
+- Dump do quadro (`LARECOMP_DEBUG_RAW_PASSES=1`, valores lidos dos `.raw`): a geometria está no G-buffer (normais
+  `056`/`057`, os alvos `083`-`096`), mas a cena iluminada (`097`, B10G11R11) é névoa pura: média (0,022; 0,055;
+  0,049), e o mínimo da tela é a cor da névoa. O buffer de luz em meia resolução (`106`-`108`, RGBA16F 640x358) é zero
+  exato; `109` quase. A cena roda a 1600x896 no jogo (1280x717 aqui).
+- Não é o volume 3D (32x32x32, `[vk] 3D target`): `LARECOMP_LOG_3D_RT=1` mostra cada fatia e cada mip num draw seu, e
+  nenhum vertex shader escreve o layer (o tradutor descarta o atributo `0x64`; agora marca `writes_layer` e o log diz
+  quando).
+- MacNativeGames: nada sobre isso nos issues / PRs / docs do TOTK nem do iPhone. O mais próximo é o #188 (terreno
+  escuro quando uma escrita de volta da GPU era pulada), que o `502088f` do BOTW (já aqui) cobre do nosso lado.
+- Próximo: achar os draws que deveriam escrever no buffer de luz e o que leem (`LARECOMP_DUMP_FS` dos shaders de luz
+  com os bancos de constantes, `LARECOMP_LOG_CBUF`), e a luz ambiente da parede (o Link tem a sua).
+
 ## Diferenças em relação ao BOTW
 
 | # | Diferença | Onde | Gravidade |

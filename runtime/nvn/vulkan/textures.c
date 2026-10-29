@@ -1221,6 +1221,9 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
             uint32_t d = b->depth >> lv0, z = v && (v->setmask & 2) ? v->min_layer : 0;
             if (!d) d = 1;
             if (z >= d) z = d - 1;
+            if (getenv("LARECOMP_LOG_3D_RT"))  // (which slices a 3D target's draws land in: one view per slice, or one for all)
+                LOG("[vk] 3D target %p %ux%ux%u fmt %d level %u slice %u (view layers %u)\n", (void *)t, t->width, t->height,
+                    b->depth, fmt, lv0, z, v && (v->setmask & 2) ? v->num_layers : 0);
             return vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, fmt, lv0, 1, z, 1, IDENTITY, b->aspect);
         }
         return vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, fmt, lv0, 1, ly0, 1, IDENTITY, b->aspect);

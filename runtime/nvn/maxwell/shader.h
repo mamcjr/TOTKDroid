@@ -72,6 +72,7 @@ typedef struct {
     uint32_t attr_mask;     // vertex: input attributes; fragment: input varyings
     uint32_t out_mask;      // vertex: output varyings; fragment: render targets written
     bool writes_depth, uses_discard, writes_point_size;
+    bool writes_layer;      // vertex: stores the layer or viewport index (attr 0x64 / 0x68) - dropped: a layered draw lands in one slice
     bool uses_gmem;         // global memory access: bind the guest heap at GMEM_BUFFER_INDEX
     bool uses_gmem_map;     // (GLSL compute only) gmem loads look their address up in GMap (uniform, binding
                             // GMAP_BUFFER_INDEX) and read GFast (storage, GFAST_BUFFER_INDEX) - a device-local copy of the

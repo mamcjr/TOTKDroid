@@ -1432,6 +1432,38 @@ NVN(nvnWindowGetPresentInterval) { RET(WIN->interval); }
 // 0x7000c4f4d4: Switch ticks, 19.2 MHz). A fixed frame rate in the menu caps it under 1.9 vsyncs, so the game keeps its
 // 30 fps mode (interval 2; BOTW never goes under 2) instead of dropping to 20 - where our GPU's clocks settle low and
 // it stayed. Auto (0): the game's own measurement.
+// TOTK 1.4.3's frame controller may go down to interval 1 - 60 fps - where a frame fits (tools/patches.py, after
+// MacNativeGames; the world, cloth and fades step by the measured time): with Video > Frame rate Auto or 60. 30, or
+// LARECOMP_FPS60=0, keeps the game's lowest (2); LARECOMP_FPS60=1 takes 1 at 30 too (the presents still wait for 2).
+bool rt_fps60(void) {
+    static int env = -2;
+    if (env == -2) env = getenv("LARECOMP_FPS60") ? atoi(getenv("LARECOMP_FPS60")) : -1;
+    return env >= 0 ? env != 0 : g_game_version == GAME_V_143 && g_settings.fps_mode != 1;
+}
+
+// TOTK cutscenes: some of their timing counts frames, so above 30 fps they played fast. tools/patches.py marks the
+// entries of four functions that run once a frame while one plays; the presents wait for 30 fps while one ran in the
+// last 200 ms. LARECOMP_CUTSCENE_FPS30=0: off (cutscenes at the chosen rate).
+static _Atomic uint64_t cutscene_ns;
+void rt_cutscene_tick(int which) {
+    static _Atomic uint8_t seen[4];
+    if (which >= 0 && which < 4 && !atomic_exchange(&seen[which], 1)) LOG("[totk] cutscene mark %d first seen\n", which);
+    atomic_store_explicit(&cutscene_ns, plat_now_ns(), memory_order_relaxed);
+}
+static bool rt_cutscene(void) {
+    static int on = -1;
+    if (on < 0) on = !getenv("LARECOMP_CUTSCENE_FPS30") || atoi(getenv("LARECOMP_CUTSCENE_FPS30"));
+    uint64_t t = atomic_load_explicit(&cutscene_ns, memory_order_relaxed);
+    bool now = on && t && plat_now_ns() - t < 200000000ull;
+    static bool last;
+    if (now != last) LOG("[totk] %s\n", (last = now) ? "cutscene: presents held at 30 fps" : "cutscene over");
+    return now;
+}
+// ... and the frame controller's own pick is 2 then (tools/patches.py, main+0x2db238): some of a cutscene's animation
+// steps by the interval the game believes in, not by the measured time - held at 30 while it believed 1 (a light
+// cutscene frame fits 60) they played in slow motion, and at 60 while it believed 2, fast (2026-10-29).
+uint32_t rt_interval_pick(uint32_t game) { return game < 2 && rt_cutscene() ? 2 : game; }
+
 int64_t rt_frame_ticks(int64_t ticks) {
     if (!g_settings.fps_mode) return ticks;
     const int64_t cap = 19200000ll * 185 / 100 / 60;  // (1.85 vsyncs)
@@ -1565,6 +1597,10 @@ NVN(nvnWindowSetPresentInterval) {
     if (max_interval < 0)
         max_interval = getenv("LARECOMP_MAX_INTERVAL") ? atoi(getenv("LARECOMP_MAX_INTERVAL")) : g_game_version == GAME_V_143 ? 2 : 0;
     if (max_interval > 0 && (int)A(1) > max_interval) c->x[1] = (uint64_t)max_interval;
+    // TOTK at Frame rate 60: always 1. Its controller (rt_fps60) went back to 2 within a second each time it tried 1
+    // in the cave (2026-10-29: 6 tries in 200 s, 30.8 fps on average); held at 1 the same walk ran 35 fps there (GPU
+    // and the ~18 ms render thread: 42 at a 960x540 scene) - Auto leaves the choice to the game.
+    if (g_game_version == GAME_V_143 && g_settings.fps_mode == 2 && rt_fps60() && force <= 0 && !rt_cutscene()) c->x[1] = 1;
     if ((int)A(1) != g_present_interval)
         LOG("[pace] the game sets its present interval to %d (lr %llx, x19 %llx [+0x240] %lld)\n", (int)A(1),
             (unsigned long long)c->x[30], (unsigned long long)c->x[19],
@@ -1599,15 +1635,20 @@ NVN(nvnQueuePresentTexture) {
     }
     {   // Frame limiter: a present waits until N vsyncs have gone by since the previous one, as NVN does on the Switch -
         // N is the larger of the window's interval (BOTW asks for 2: its world steps 1/30 s a frame) and the Video
-        // tab's cap (Frame rate 30: 2, 60: 1; Auto: 2 for now). Without it the menus ran at ~200 fps and the world
-        // ran fast whenever a frame came in under 33 ms. LARECOMP_PRESENT_WAIT=0: off.
+        // tab's cap (Frame rate 30: 2, 60: 1; Auto: 2 for now, TOTK's 1 - its controller picks 1 or 2, rt_fps60).
+        // Without it the menus ran at ~200 fps and the world ran fast whenever a frame came in under 33 ms.
+        // LARECOMP_PRESENT_WAIT=0: off.
         static int on = -1;
         static uint64_t last_vs;
         if (on < 0) on = !getenv("LARECOMP_PRESENT_WAIT") || atoi(getenv("LARECOMP_PRESENT_WAIT"));
         extern volatile uint64_t g_vsync_count;
         extern __thread uint64_t g_blocked_ns;  // (kernel.c: the pacer counts this as idle, not frame work)
-        int cap = g_settings.fps_mode == 2 ? 1 : 2;
+        int cap = g_settings.fps_mode == 2 || (!g_settings.fps_mode && rt_fps60()) ? 1 : 2;
         int n = w->interval > cap ? w->interval : cap;
+        // (TOTK at Frame rate 60: 1 whatever the window kept - the controller calls it only on a change, and a
+        // cutscene's 2 stayed there after it; a cutscene at 30, as on the Switch)
+        if (g_game_version == GAME_V_143 && g_settings.fps_mode == 2 && rt_fps60()) n = 1;
+        if (n < 2 && rt_cutscene()) n = 2;
         if (on && framepace_on()) {
             // BOTW 1.8.2 (runtime/hle/framepace.c): a steady grid at the chosen frame rate, whatever the interval;
             // after a long frame the grid starts again. framepace.c sets the game's clock from when it went out.

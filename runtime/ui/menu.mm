@@ -546,17 +546,19 @@ static void tab_display(void) {
     opt_toggle("Touch controls", &g_settings.touch_controls, false,
                "On-screen buttons and stick while no controller is connected. The back button opens this menu.");
     {
-        // BOTW 1.8.2: up to 60 (hle/framepace.c keeps the game's clock right at any rate). TOTK runs at 30 on the
-        // Switch, with no such hooks yet: a 60 counts as 30.
+        // BOTW 1.8.2: up to 60 (hle/framepace.c keeps the game's clock right at any rate). TOTK 1.4.3 (30 on the
+        // Switch): its frame controller may pick 60 and the world steps by the measured time (nvn/objects.c rt_fps60).
         extern int g_game_version;
-        bool sixty = g_game_version == 182;
+        // (before the game loads - the menu on the start screen - its version is 0: the data root's, 1.4.3, so a 60
+        // isn't shown missing and set back to 30)
+        int version = g_game_version ? g_game_version : 143;
+        bool sixty = version == 182 || version == 143;
         if (!sixty && g_settings.fps_mode > 1) g_settings.fps_mode = 1;
         static const char *fr[] = {"Auto (20 / 30)", "30 fps"};
         static const char *fr60[] = {"Auto (30 / 60)", "30 fps", "60 fps"};
         opt_choice("Frame rate", &g_settings.fps_mode, sixty ? fr60 : fr, sixty ? 3 : 2, 1,
                    sixty ? "Auto: 60 fps where your device keeps up, 30 where it doesn't (the game's clock stays right "
-                           "either way). 30 fps: steady and cooler - the phone heats less. 60 fps: always aims for 60 "
-                           "(game version 1.8.2; 1.0.0 and 1.6.0 run at 30)."
+                           "either way). 30 fps: steady and cooler - the phone heats less. 60 fps: always aims for 60."
                          : "Auto: the game's own pacing, as on the Switch. 30 fps: never more than 30 frames a "
                            "second.");
     }

@@ -2524,6 +2524,10 @@ static void translate_program(void *arg) {
     subst_glsl(p->fi, p->code[1], "fs");
 #endif
     p->vs_uses_vid = strstr(p->vi->msl, "gl_VertexIndex") != NULL;
+    if (p->vi->writes_layer) {  // (diagnosis: a layered draw - into a 3D or array target - lands in one slice here)
+        static int n;
+        if (n++ < 20) LOG("[shader] vertex shader %llx writes the layer / viewport index: dropped\n", (unsigned long long)p->code[0]);
+    }
     save_glsl(p->vi->msl, p->code[0], "vs");
     save_glsl(p->fi->msl, p->code[1], "fs");
     run_job(compile_program, p);
@@ -5755,6 +5759,22 @@ static void draw_(CmdRec *r, bool indexed) {
         for (int i = 0; i < nskip; i++) if (last_hash == skip[i]) { stat_skipped++; return; }
         if (g_debug_frame && getenv("LARECOMP_LOG_FSHASH")) LOG("[fshash] fs=%llx hash %016llx\n", (unsigned long long)fs, (unsigned long long)last_hash);
         g_cur_fs_hash = last_hash;
+#ifdef __ANDROID__
+        {   // LARECOMP_LOG_FSSEEN=1: each fragment shader the first time it draws, and again when it comes back after
+            // 3 s without - the shaders only some scenes use (a cutscene's), against a recording
+            static int on = -1;
+            if (on < 0) on = getenv("LARECOMP_LOG_FSSEEN") && atoi(getenv("LARECOMP_LOG_FSSEEN"));
+            static uint64_t seen_h[8192], seen_t[8192];
+            if (on && last_hash) {
+                uint64_t now = plat_now_ns();
+                uint32_t i = (uint32_t)(last_hash ^ last_hash >> 29) & 8191;
+                while (seen_h[i] && seen_h[i] != last_hash) i = (i + 1) & 8191;
+                if (!seen_h[i] || now - seen_t[i] > 3000000000ull)
+                    LOG("[fsseen] fs %016llx %s\n", (unsigned long long)last_hash, seen_h[i] ? "back" : "new");
+                seen_h[i] = last_hash, seen_t[i] = now;
+            }
+        }
+#endif
         {   // Widescreen: a menu's layout pane that shows a picture of the world (the blurred world behind the pause
             // menu: a copy of the scene, a target widened to the window's shape) widens with it - drawn in the middle
             // 16:9 part, its sides were black

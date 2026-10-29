@@ -67,13 +67,18 @@ static int cmp(const void *x, const void *y) {
     return a < b ? 1 : a > b ? -1 : 0;
 }
 
-static void fnprof_write(long from, long to) {
+static void fnprof_write(long from, long to, bool keep) {
     uint64_t (*rows)[2] = malloc(sizeof(uint64_t[2]) * NSLOT);
     int n = 0;
     for (int i = 0; i < NSLOT; i++)
         if (slots[i].addr) { rows[n][0] = slots[i].addr; rows[n][1] = slots[i].count; n++; }
     qsort(rows, n, sizeof rows[0], cmp);
     const char *out = getenv("LARECOMP_FNPROF_OUT") ? getenv("LARECOMP_FNPROF_OUT") : "build/fnprof.txt";  // (parallel runs)
+    char numbered[1100];
+    if (keep) {  // (LARECOMP_FNPROF_KEEP=1: each periodic write kept as <out>.<frame> - counts per stretch of play by difference)
+        snprintf(numbered, sizeof numbered, "%s.%ld", out, to);
+        out = numbered;
+    }
     char tmp[1100];
     snprintf(tmp, sizeof tmp, "%s.tmp", out);  // (then renamed: a session stopped mid-write keeps the last whole file)
     FILE *f = fopen(tmp, "w");
@@ -102,10 +107,11 @@ void fnprof_frame(uint64_t frame) {
     }
     if (from < 0) return;
     if ((long)frame == from) { __atomic_fetch_or(&g_fnprof, 1, __ATOMIC_SEQ_CST); LOG("[fnprof] on at frame %llu\n", (unsigned long long)frame); }
-    if (every > 0 && (long)frame > from && (long)frame < to && ((long)frame - from) % every == 0) fnprof_write(from, (long)frame);
+    if (every > 0 && (long)frame > from && (long)frame < to && ((long)frame - from) % every == 0)
+        fnprof_write(from, (long)frame, getenv("LARECOMP_FNPROF_KEEP") && atoi(getenv("LARECOMP_FNPROF_KEEP")));
     if ((long)frame != to) return;
     __atomic_fetch_and(&g_fnprof, ~1, __ATOMIC_SEQ_CST);
-    fnprof_write(from, to);
+    fnprof_write(from, to, false);
     from = -1;
 }
 

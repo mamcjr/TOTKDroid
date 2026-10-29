@@ -111,6 +111,78 @@ def _cloth_call_args(word, src, what):
     return patch
 
 
+# 60 fps: the frame controller (main+0x2db180, from the frame loop; it calls nvnWindowSetPresentInterval from
+# 0x2db2e8) picks the present interval from the measured frame work, never under its lowest ([x20], 2: 30 fps).
+# MacNativeGames' seven instructions take that lowest as 1 instead, so it picks 60 where a frame fits and 30 where it
+# doesn't. Each site here is both instructions, the original and theirs (the lifter's own C for each), chosen at run
+# time: rt_fps60() is Video > Frame rate Auto or 60 (LARECOMP_FPS60=0/1 overrides).
+def _fps60(word, new):
+    def patch(gen, a):
+        _expect(gen, a, word)
+        old_c, new_c = (gen.lifter.lift(w, a) for w in (word, new))
+        assert old_c.kind == new_c.kind == 'op', (old_c.kind, new_c.kind)
+        return (f'{{ extern _Bool rt_fps60(void); if (rt_fps60()) {{ {new_c.code} }} else {{ {old_c.code} }} }}'
+                f'  /* {a:#x}: {word:08x} or, at 60 fps, {new:08x} (the lowest interval 1) */')
+    return patch
+
+
+for _a, _old, _new in ((0x70002db204, 0x6b08015f, 0x7100055f),   # cmp w10, w8          -> cmp w10, #1
+                       (0x70002db208, 0x1a89b10a, 0x1a9fa52a),   # csel w10, w8, w9, lt -> csinc w10, w9, wzr, ge
+                       (0x70002db22c, 0xb940468a, 0xd503201f),   # ldr w10, [x20, #0x44] -> nop
+                       (0x70002db340, 0xb9400288, 0x52800028),   # ldr w8, [x20]        -> mov w8, #1
+                       (0x70002db34c, 0x2a0a03f5, 0x1a9fa555),   # mov w21, w10         -> csinc w21, w10, wzr, ge
+                       (0x70002db360, 0x6b0801bf, 0x710005bf),   # cmp w13, w8          -> cmp w13, #1
+                       (0x70002db36c, 0x1a88c1ac, 0x1a9fc5ac)):  # csel w12, w13, w8, gt -> csinc w12, w13, wzr, gt
+    PATCHES_143[_a] = _fps60(_old, _new)
+
+
+# Fades (objects fading in and out: four places step a byte counter by trunc(2.1 x the step ratio), the ratio 1 at 30
+# fps): at 60 the ratio is ~0.5 and a frame a little shorter than 1/60 s steps 0 - MacNativeGames saw objects stay
+# invisible or half transparent above ~63.5 fps. A positive step is at least 1 (a paused game's 0 stays 0).
+def _fade_step(rd):
+    def patch(gen, a):
+        _expect(gen, a, 0x1e380000 | rd)  # fcvtzs w<rd>, s0 (saturating, NaN 0)
+        return ('{ float s0; memcpy(&s0, &c->v[0], 4); int32_t r = s0 != s0 ? 0 : s0 >= 2147483648.0f ? 0x7fffffff : '
+                's0 <= -2147483648.0f ? (int32_t)0x80000000u : (int32_t)s0; if (r == 0 && s0 > 0) r = 1; '
+                f'c->x[{rd}] = (uint32_t)r; }}  /* {a:#x}: fcvtzs w{rd}, s0 (a fade\'s step, at least 1) */')
+    return patch
+
+
+# Cutscenes: some of their timing counts frames - above 30 fps they played fast. Four functions that run once a frame
+# while one plays and never in the title or in play (counted over the new game's opening, LARECOMP_FNPROF, 2026-10-29;
+# from three different call chains, so one tied to that scene alone still leaves the others): each entry marks the
+# frame, and the presents wait for 30 fps while one has run in the last 200 ms (nvn/objects.c rt_cutscene_tick).
+def _cutscene_mark(word, which):
+    def patch(gen, a):
+        _expect(gen, a, word)
+        ins = gen.lifter.lift(word, a)
+        assert ins.kind == 'op', ins.kind
+        return (f'{{ extern void rt_cutscene_tick(int); rt_cutscene_tick({which}); {ins.code} }}'
+                f'  /* {a:#x}: a cutscene function\'s entry ({which}) */')
+    return patch
+
+
+for _i, (_a, _w) in enumerate(((0x700045c700, 0xd10103ff), (0x7002b23c7c, 0xd100c3ff),
+                               (0x700042c3bc, 0xd10283ff), (0x7000a5a188, 0xf9401008))):
+    PATCHES_143[_a] = _cutscene_mark(_w, _i)
+
+
+# ... and the frame controller picks 2 while one plays: every path that sets its interval (w21) meets here, before it is
+# stored ([x20+0x40], [x19+0x88]) and given to nvnWindowSetPresentInterval. Some cutscene animation steps by that
+# interval, not the measured time: the game must believe the 30 fps it is held at (rt_interval_pick).
+def _interval_pick(gen, a):
+    _expect(gen, a, 0x52800788)  # mov w8, #0x3c
+    return ('{ extern uint32_t rt_interval_pick(uint32_t); c->x[21] = rt_interval_pick((uint32_t)c->x[21]); '
+            f'c->x[8] = 0x3c; }}  /* {a:#x}: mov w8, #0x3c (w21: the interval picked) */')
+
+
+PATCHES_143[0x70002db238] = _interval_pick
+
+PATCHES_143[0x70000a7ac4] = _fade_step(8)
+PATCHES_143[0x700095dd24] = _fade_step(8)
+PATCHES_143[0x70006155e4] = _fade_step(10)
+PATCHES_143[0x7000615660] = _fade_step(10)
+
 PATCHES_143[0x7000246eac] = _cloth_inline(0x360, 0x364, 10, 0, 0, 0x1e200940, 'fmul s0, s10, s0')
 PATCHES_143[0x7000345904] = _cloth_inline(0x110, 0x114, 0, 1, 1, 0x1e210801, 'fmul s1, s0, s1')
 PATCHES_143[0x7000249448] = _cloth_call_args(0x2a1403e6, 20, 'mov w6, w20')

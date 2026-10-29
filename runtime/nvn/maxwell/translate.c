@@ -363,6 +363,7 @@ static void attr_store(Ctx *c, int src, uint32_t addr) {
         c->info->writes_point_size = true;
         sp(&c->body, "    out.psize = as_type<float>(%s);\n", v);
     } else {
+        if (addr == 0x64 || addr == 0x68) c->info->writes_layer = true;  // (dropped: a layered draw lands in one slice)
         sp(&c->body, "    /* store attr %#x */\n", addr);
     }
 }

@@ -213,6 +213,34 @@ static int fix_cloth_249448(Cpu *c) { return cloth_call_args(c, 20); }
 static int fix_cloth_28bc94(Cpu *c) { return cloth_call_args(c, 26); }
 static int fix_render_w(Cpu *c) { vset(c, 0, rt_render_size(0, (int32_t)c->x[11], (int32_t)c->x[9])); return 3; }  // scvtf s0, w11
 static int fix_render_h(Cpu *c) { vset(c, 0, rt_render_size(1, (int32_t)c->x[10], (int32_t)c->x[9])); return 3; }  // scvtf s0, w10
+// 60 fps: the frame controller's lowest present interval 1 instead of [x20] (patches.py's seven sites). Here w8 = 1
+// before its first cmp does what their cmp / csel with #1 do (w8 stays the lowest until 0x2db238's mov or 0x2db340's
+// reload), so four of them are enough: no flags to compute.
+bool rt_fps60(void);  // nvn/objects.c
+static int fix_fps60_cmp(Cpu *c) { if (rt_fps60()) c->x[8] = 1; return 0; }                // cmp w10, w8
+static int fix_fps60_skip(Cpu *c) { return rt_fps60() ? 3 : 0; }                          // ldr w10, [x20, #0x44]
+static int fix_fps60_lowest(Cpu *c) { if (!rt_fps60()) return 0; c->x[8] = 1; return 3; }  // ldr w8, [x20]
+static int fix_fps60_pick(Cpu *c) {  // mov w21, w10 (after cmp w10, w8 / b.gt: the interval, at least 1)
+    if (!rt_fps60()) return 0;
+    c->x[21] = (int32_t)c->x[10] >= 1 ? (uint32_t)c->x[10] : 1;
+    return 3;
+}
+static int fade_step(Cpu *c, int rd) {  // fcvtzs w<rd>, s0: a fade's step, at least 1 when positive
+    float s0 = vget(c, 0);
+    int32_t r = s0 != s0 ? 0 : s0 >= 2147483648.0f ? 0x7fffffff : s0 <= -2147483648.0f ? (int32_t)0x80000000u : (int32_t)s0;
+    if (r == 0 && s0 > 0) r = 1;
+    c->x[rd] = (uint32_t)r;
+    return 3;
+}
+void rt_cutscene_tick(int which);  // nvn/objects.c: a cutscene function's entry (patches.py's four)
+static int fix_cutscene0(Cpu *c) { (void)c; rt_cutscene_tick(0); return 0; }
+static int fix_cutscene1(Cpu *c) { (void)c; rt_cutscene_tick(1); return 0; }
+static int fix_cutscene2(Cpu *c) { (void)c; rt_cutscene_tick(2); return 0; }
+static int fix_cutscene3(Cpu *c) { (void)c; rt_cutscene_tick(3); return 0; }
+uint32_t rt_interval_pick(uint32_t game);
+static int fix_interval_pick(Cpu *c) { c->x[21] = rt_interval_pick((uint32_t)c->x[21]); return 0; }  // mov w8, #0x3c
+static int fix_fade_w8(Cpu *c) { return fade_step(c, 8); }
+static int fix_fade_w10(Cpu *c) { return fade_step(c, 10); }
 typedef struct { int version; uint64_t addr, alt; uint32_t word; int (*fn)(Cpu *); const char *what; } Fix;
 static const Fix fixes[] = {  // (canonical addresses, 0x7000000000 + the offset in main)
     {143, 0x70005848a8, 0, 0x2a1703e9, fix_dynres_scale, "dynamic resolution scale"},
@@ -230,6 +258,19 @@ static const Fix fixes[] = {  // (canonical addresses, 0x7000000000 + the offset
     {143, 0x700028bc94, 0, 0x2a1a03e6, fix_cloth_28bc94, "cloth clock (call)"},
     {143, 0x7000585e48, 0, 0x1e220160, fix_render_w, "scene width"},
     {143, 0x7000585e54, 0, 0x1e220140, fix_render_h, "scene height"},
+    {143, 0x70002db204, 0, 0x6b08015f, fix_fps60_cmp, "60 fps (the lowest interval)"},
+    {143, 0x70002db22c, 0, 0xb940468a, fix_fps60_skip, "60 fps (the interval tried)"},
+    {143, 0x70002db340, 0, 0xb9400288, fix_fps60_lowest, "60 fps (the lowest again)"},
+    {143, 0x70002db34c, 0, 0x2a0a03f5, fix_fps60_pick, "60 fps (the interval picked)"},
+    {143, 0x70000a7ac4, 0, 0x1e380008, fix_fade_w8, "fade step"},
+    {143, 0x700095dd24, 0, 0x1e380008, fix_fade_w8, "fade step"},
+    {143, 0x70006155e4, 0, 0x1e38000a, fix_fade_w10, "fade step"},
+    {143, 0x7000615660, 0, 0x1e38000a, fix_fade_w10, "fade step"},
+    {143, 0x700045c700, 0, 0xd10103ff, fix_cutscene0, "cutscene mark"},
+    {143, 0x7002b23c7c, 0, 0xd100c3ff, fix_cutscene1, "cutscene mark"},
+    {143, 0x700042c3bc, 0, 0xd10283ff, fix_cutscene2, "cutscene mark"},
+    {143, 0x7000a5a188, 0, 0xf9401008, fix_cutscene3, "cutscene mark"},
+    {143, 0x70002db238, 0, 0x52800788, fix_interval_pick, "the interval picked (2 in cutscenes)"},
 };
 int native_patch_c(Cpu *c, uint32_t i) { return fixes[i].fn(c); }
 
