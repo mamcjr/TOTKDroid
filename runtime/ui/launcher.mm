@@ -1279,9 +1279,9 @@ static void switch_to_version(int v) {
 static void carry_game_code(int version) {
     char vr[1024], main_root[1024];
     if (!rt_version_root(version, vr, sizeof vr) || !rt_version_root(100, main_root, sizeof main_root)) return;
-    std::string path = std::string(vr) + "/botwrecompandroid.ini", text, line;
+    std::string path = std::string(vr) + "/totkrecompandroid.ini", text, line;
     FILE *f = fopen(path.c_str(), "rb");
-    if (!f) f = fopen((std::string(main_root) + "/botwrecompandroid.ini").c_str(), "rb");  // (as paths.c version_seed)
+    if (!f) f = fopen((std::string(main_root) + "/totkrecompandroid.ini").c_str(), "rb");  // (as paths.c version_seed)
     if (f) {
         for (int ch; (ch = fgetc(f)) != EOF;) {
             line += (char)ch;

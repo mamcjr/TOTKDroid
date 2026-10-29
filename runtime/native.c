@@ -164,41 +164,72 @@ static uint64_t stub_tls(uint32_t *s, uint64_t at, uint64_t site, int n, int off
 // the Cpu and says how to go on: 0 run the original instruction (from the stub) and go on after it, 1 the fix's
 // other address, 2 return from the function (ret), 3 go on after the instruction without running it.
 extern char native_patch_gate[];
-int64_t rt_frame_ticks(int64_t ticks);      // nvn/objects.c
-int rt_frame_wait(void);                    // hle/framepace.c
-void rt_vfr_update(uint64_t vfr);
-void rt_persp_update(uint64_t proj);        // hle/widescreen.c
-uint32_t rt_persp_aspect(uint64_t proj);
-static int fix_clustered_100(Cpu *c) {  // act::ClusteredRenderer's teardown with a null display-list heap
-    if (c->x[0]) return 0;
-    c->x[21] = c->x[20] + 0xc60;
-    return 1;
+// TOTK 1.4.3's fixes (tools/patches.py, there each the C in place of the instruction; the comments there say why)
+uint32_t rt_dynres_scale(uint32_t game);    // nvn/objects.c
+uint32_t rt_dynres_tier(uint64_t ctl, uint32_t cur, uint32_t want);
+float rt_frame_ratio30(float nominal);
+float rt_frame_interval60(float nominal);
+float rt_cloth_step(float nominal_s);
+float rt_cloth_ratio(void);
+float rt_render_size(int axis, int32_t game, int32_t output_w);
+static float vget(const Cpu *c, int r) { float f; memcpy(&f, &c->v[r], 4); return f; }
+static void vset(Cpu *c, int r, float f) { c->v[r] = 0; memcpy(&c->v[r], &f, 4); }
+static int fix_dynres_scale(Cpu *c) { c->x[9] = rt_dynres_scale((uint32_t)c->x[23]); return 3; }  // mov w9, w23
+static int dynres_tier(Cpu *c, int reg) {  // str w<reg>, [x19, #0x134]
+    uint32_t *p = (uint32_t *)(uintptr_t)(c->x[19] + 0x134);
+    *p = rt_dynres_tier(c->x[19], *p, (uint32_t)c->x[reg]);
+    return 3;
 }
-static int fix_clustered_160(Cpu *c) {
-    if (c->x[0]) return 0;
-    c->x[8] = *(const uint32_t *)(uintptr_t)(c->x[20] + 0xc9c);
-    return 1;
+static int fix_dynres_tier24(Cpu *c) { return dynres_tier(c, 24); }
+static int fix_dynres_tier0(Cpu *c) { return dynres_tier(c, 0); }
+static int fix_step_ratio(Cpu *c) {  // ldr s0, [x19, #0x250] -> the step ratio itself
+    int32_t fps = *(const int32_t *)(uintptr_t)(c->x[19] + 0x250);
+    vset(c, 0, rt_frame_ratio30(30.0f / (float)fps));
+    return 3;
 }
-static int fix_ticks_100(Cpu *c) { c->x[9] = (uint64_t)rt_frame_ticks(*(const int64_t *)(uintptr_t)(c->x[19] + 0x240)); return 3; }
-static int fix_ticks_160(Cpu *c) { c->x[8] = (uint64_t)rt_frame_ticks(*(const int64_t *)(uintptr_t)(c->x[19] + 0x248)); return 3; }
-static int fix_frame_wait(Cpu *c) { (void)c; return rt_frame_wait() ? 2 : 0; }
-static int fix_vfr(Cpu *c) { rt_vfr_update(c->x[19]); return 0; }
-static int fix_persp_matrix(Cpu *c) { rt_persp_update(c->x[0]); return 0; }
-static int fix_persp_aspect(Cpu *c) { c->v[0] = rt_persp_aspect(c->x[0]); return 3; }
+static int fix_drop(Cpu *c) { (void)c; return 3; }  // (the ratio is already in s0)
+static int fix_step_interval(Cpu *c) {  // fmul s8, s0, s1 (s0: 60 / fps)
+    float s0 = rt_frame_interval60(vget(c, 0));
+    vset(c, 8, s0 * vget(c, 1));
+    vset(c, 0, s0);
+    return 3;
+}
+static int cloth_inline(Cpu *c, uint32_t ratio_off, int factor, int nominal, int dest) {
+    float fac = vget(c, factor), step = rt_cloth_step(vget(c, nominal)), ratio = step * 30.0f * fac;
+    memcpy((void *)(uintptr_t)(c->sp + ratio_off), &ratio, 4);
+    vset(c, dest, step * fac);
+    return 3;
+}
+static int fix_cloth_246eac(Cpu *c) { return cloth_inline(c, 0x364, 10, 0, 0); }  // fmul s0, s10, s0
+static int fix_cloth_345904(Cpu *c) { return cloth_inline(c, 0x114, 0, 1, 1); }   // fmul s1, s0, s1
+static int cloth_call_args(Cpu *c, int src) {  // mov w6, w<src>, and the clock in s2 / s3 for the bl 0x2a0e40 next
+    c->x[6] = (uint32_t)c->x[src];
+    float r = rt_cloth_ratio();
+    vset(c, 2, vget(c, 2) * r);
+    vset(c, 3, vget(c, 3) * r);
+    return 3;
+}
+static int fix_cloth_249448(Cpu *c) { return cloth_call_args(c, 20); }
+static int fix_cloth_28bc94(Cpu *c) { return cloth_call_args(c, 26); }
+static int fix_render_w(Cpu *c) { vset(c, 0, rt_render_size(0, (int32_t)c->x[11], (int32_t)c->x[9])); return 3; }  // scvtf s0, w11
+static int fix_render_h(Cpu *c) { vset(c, 0, rt_render_size(1, (int32_t)c->x[10], (int32_t)c->x[9])); return 3; }  // scvtf s0, w10
 typedef struct { int version; uint64_t addr, alt; uint32_t word; int (*fn)(Cpu *); const char *what; } Fix;
 static const Fix fixes[] = {  // (canonical addresses, 0x7000000000 + the offset in main)
-    {100, 0x70010c1aa0, 0x70010c1ad8, 0xf9400008, fix_clustered_100, "ClusteredRenderer teardown"},
-    {100, 0x7000c4f4d4, 0, 0xf9412269, fix_ticks_100, "frame duration"},
-    {160, 0x7001861440, 0x7001861470, 0xf9400008, fix_clustered_160, "ClusteredRenderer teardown"},
-    {160, 0x700161495c, 0, 0xf9412668, fix_ticks_160, "frame duration"},
-    {182, 0x7000d811fc, 0, 0xa9bd7bfd, fix_frame_wait, "frame wait"},
-    {182, 0x70014092f4, 0, 0xb9407a68, fix_vfr, "VFR ratio"},
-    {182, 0x7000da13f4, 0, 0xbd409800, fix_persp_matrix, "projection matrix"},
-    {182, 0x7000da13d8, 0, 0xbd40b000, fix_persp_aspect, "projection aspect"},
-    {190, 0x7000e9487c, 0, 0xa9bd7bfd, fix_frame_wait, "frame wait"},
-    {190, 0x700151d494, 0, 0xb9407a68, fix_vfr, "VFR ratio"},
-    {190, 0x7000eb4a44, 0, 0xbd409800, fix_persp_matrix, "projection matrix"},
-    {190, 0x7000eb4a28, 0, 0xbd40b000, fix_persp_aspect, "projection aspect"},
+    {143, 0x70005848a8, 0, 0x2a1703e9, fix_dynres_scale, "dynamic resolution scale"},
+    {143, 0x7000584a70, 0, 0xb9013678, fix_dynres_tier24, "dynamic resolution tier (up)"},
+    {143, 0x7000584b70, 0, 0xb9013660, fix_dynres_tier0, "dynamic resolution tier (reset)"},
+    {143, 0x7000584b94, 0, 0xb9013678, fix_dynres_tier24, "dynamic resolution tier (down)"},
+    {143, 0x70002daa54, 0, 0xbd425260, fix_step_ratio, "world step ratio"},
+    {143, 0x70002daa6c, 0, 0x5e21d800, fix_drop, "world step (scvtf)"},
+    {143, 0x70002daa70, 0, 0x1e201820, fix_drop, "world step (fdiv)"},
+    {143, 0x70002daa78, 0, 0x1e210800, fix_drop, "world step (fmul)"},
+    {143, 0x70003e5658, 0, 0x1e210808, fix_step_interval, "world step interval"},
+    {143, 0x7000246eac, 0, 0x1e200940, fix_cloth_246eac, "cloth clock (inline)"},
+    {143, 0x7000345904, 0, 0x1e210801, fix_cloth_345904, "cloth clock (inline)"},
+    {143, 0x7000249448, 0, 0x2a1403e6, fix_cloth_249448, "cloth clock (call)"},
+    {143, 0x700028bc94, 0, 0x2a1a03e6, fix_cloth_28bc94, "cloth clock (call)"},
+    {143, 0x7000585e48, 0, 0x1e220160, fix_render_w, "scene width"},
+    {143, 0x7000585e54, 0, 0x1e220140, fix_render_h, "scene height"},
 };
 int native_patch_c(Cpu *c, uint32_t i) { return fixes[i].fn(c); }
 
