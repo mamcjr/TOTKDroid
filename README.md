@@ -1,4 +1,4 @@
-# TOTKRecompAndroid
+# TOTKDroid
 
 **English** | [Português](README.pt-BR.md)
 
@@ -9,6 +9,10 @@ is replaced by the runtime, and its graphics (NVN) are translated to Vulkan.
 It is built on the engine of **[LAS Recomp](https://github.com/peiikai/LASRecomp)** by peiikai (a recompilation of
 *Link's Awakening*), its Android port **[LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid)** and
 **[BOTWRecompAndroid](https://github.com/mamcjr/BOTWRecompAndroid)**, which this repository was forked from.
+
+Formerly **TOTKRecompAndroid**: renamed once the game's code ran natively and the recompiled build left the app
+(2026-10-30). The old repository address redirects here; the app keeps its Android id (`com.totkrecompandroid`), so
+it updates over an installed copy with its saves.
 
 > [!WARNING]
 > **Early.** On the phone (with the Turnip driver) the game loads a save in the prologue's cave and Link can be moved,

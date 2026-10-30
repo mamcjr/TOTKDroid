@@ -425,11 +425,11 @@ static bool driver_error_dialog(const char *text) {
 void plat_fatal_notice(void) {
     fflush(stderr);
     char message[1400];
-    snprintf(message, sizeof message, "TOTKRecompAndroid stopped because of an error.\n\n%s\n\n"
+    snprintf(message, sizeof message, "TOTKDroid stopped because of an error.\n\n%s\n\n"
              "Please include a screenshot of this message and your app/driver version in your bug report.\n"
              "More details: logcat, tag TOTKRecompAndroid.", fatal_message[0] ? fatal_message : "The runtime encountered a fatal error.");
     if (strcasestr(fatal_message, "vulkan") && driver_error_dialog(message)) return;  // (the driver's own errors)
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "TOTKRecompAndroid", message, NULL);
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "TOTKDroid", message, NULL);
 }
 
 const char *rt_host_fn_name(uint64_t pc, uint64_t *offset);  // runtime/dispatch.c

@@ -1,5 +1,5 @@
 // Start screen, shown before the game boots (from LAS Recomp's, styled after Dusklight's launcher): PLAY, SETTINGS,
-// QUIT, game-files status at the lower left. Nothing of the game ships with TOTKRecompAndroid: on first launch the user picks
+// QUIT, game-files status at the lower left. Nothing of the game ships with TOTKDroid: on first launch the user picks
 // the folder with their own game files (Tears of the Kingdom 1.4.3), we tell the version by the main module's build id,
 // copy the files into that version's folder (runtime/paths.h) and build the game's data image; PLAY stays disabled
 // until that worked. A version set up beside the one running becomes the one played: the app starts again in its
@@ -97,8 +97,8 @@ static void save_png(id<MTLTexture> tex, const char *path) {
 // The start screen asks GitHub for the project's releases once per launch (a background curl, which macOS and
 // Windows 10+ ship) and offers the best one if it outranks this build: any v1.0.0+ above every beta, betas by
 // number; other tags (the alpha_* ones) are ignored. Offline / no curl / anything unexpected: nothing is shown.
-#define RELEASES_URL "https://api.github.com/repos/mamcjr/TOTKRecompAndroid/releases?per_page=100"
-#define RELEASE_PAGE "https://github.com/mamcjr/TOTKRecompAndroid/releases/tag/"
+#define RELEASES_URL "https://api.github.com/repos/mamcjr/TOTKDroid/releases?per_page=100"
+#define RELEASE_PAGE "https://github.com/mamcjr/TOTKDroid/releases/tag/"
 
 static long long tag_rank(const std::string &t) {
     int n, a, b, c;
@@ -139,7 +139,7 @@ static void *update_thread(void *) {
         std::string out = std::string(rt_data_root()) + "/cache/releases.json";
         mkdir((std::string(rt_data_root()) + "/cache").c_str(), 0755);
         const char *av[] = {curl.c_str(), "-fsSL", "--max-time", "15", "-H", "Accept: application/vnd.github+json",
-                            "-A", "TOTKRecompAndroid/" LARECOMP_VERSION, RELEASES_URL, NULL};
+                            "-A", "TOTKDroid/" LARECOMP_VERSION, RELEASES_URL, NULL};
         PlatProc p = plat_spawn(av, out.c_str(), false);
         if (!p || plat_proc_wait(p, true) != 0) { remove(out.c_str()); return NULL; }
         if (FILE *f = fopen(out.c_str(), "rb")) {
@@ -291,7 +291,7 @@ static void set_failure(int k) {
         "Choose the folder that holds the game files.",
         "Choose the folder that holds the game files.",
         "Make sure there's about 40 GB free and try again.",
-        "TOTKRecompAndroid runs The Legend of Zelda: Tears of the Kingdom with its update 1.4.3.",
+        "TOTKDroid runs The Legend of Zelda: Tears of the Kingdom with its update 1.4.3.",
         "Some files are missing. Choose the folder again; if it happens again, dump the game again.",
         "Try again: the build goes on where it stopped. If it keeps failing, report it on GitHub with the log."};
     if (k >= 1 && k <= 6) set_job(head[k], true, hint[k]);
@@ -450,7 +450,7 @@ static void *extract_thread(void *) {
         dest = std::string(vr) + "/extracted";
     }
     {
-        // (the picked folder can't be TOTKRecompAndroid's own copy: setting up again deletes that first)
+        // (the picked folder can't be TOTKDroid's own copy: setting up again deletes that first)
         char a[4096], b[4096];
         mkdir(dest.c_str(), 0755);
         if (realpath(exefs.c_str(), a) && realpath(dest.c_str(), b) && !strncmp(a, b, strlen(b)) &&
@@ -853,8 +853,8 @@ extern "C" JNIEXPORT void JNICALL Java_com_totkrecompandroid_TOTKRecompAndroidAc
     const char *n = env->GetStringUTFChars(name, NULL);
     pthread_mutex_lock(&g_lock);
     char m[512];
-    snprintf(m, sizeof m, tr("%s installed. Restart TOTKRecompAndroid to use it."), n ? n : "");
-    g_driver_msg = n && !strcmp(n, "-") ? tr("The system's driver from the next start on. Restart TOTKRecompAndroid to use it.")
+    snprintf(m, sizeof m, tr("%s installed. Restart TOTKDroid to use it."), n ? n : "");
+    g_driver_msg = n && !strcmp(n, "-") ? tr("The system's driver from the next start on. Restart TOTKDroid to use it.")
                    : n && *n                ? m
                                             : tr("That file isn't a driver.");
     g_driver_restart = n && *n;
@@ -1032,7 +1032,7 @@ extern "C" void menu_apply_window_requests(void *sdl_window);
 extern "C" int g_start_screen;  // runtime/hle/game.c: the start screen is up (no game loaded: don't read its memory)
 static float g_menu_gap = 0.35f;  // space under each item, in line heights
 
-// The first PLAY ever (settings.menu_tip_seen): a note on opening the TOTKRecompAndroid menu in game (it isn't obvious),
+// The first PLAY ever (settings.menu_tip_seen): a note on opening the TOTKDroid menu in game (it isn't obvious),
 // OK starts the game. Returns true once OK is pressed.
 static bool g_tip_test;  // (LARECOMP_LAUNCHER_SHOT=<frame>:tip)
 // First PLAY ever, before the menu note: authentic 16:9 or the unlocked (fill the window) aspect ratio.
@@ -1093,7 +1093,7 @@ static bool menu_tip(float s) {
         static const char *const home[] = {"Home button", "Xbox button", "PlayStation button"};  // (bind_label_family)
         static const char *const pad[] = {"Minus + Plus", "View + Menu", "Create + Options"};
         ImGui::PushTextWrapPos(0);
-        ImGui::TextUnformatted(tr("TOTKRecompAndroid has its own menu for settings and controls."));
+        ImGui::TextUnformatted(tr("TOTKDroid has its own menu for settings and controls."));
         ImGui::Spacing();
         int fam = bind_label_family() % 3;
 #ifdef __ANDROID__
@@ -1301,14 +1301,14 @@ static int g_switching_to;  // (Android: the version the app is about to start a
 static double g_switch_at;
 static void switch_to_version(int v) {
     if (!rt_select_game_version(v)) {
-        set_job("Couldn't switch the game version", true, "TOTKRecompAndroid can't write to its data folder.");
+        set_job("Couldn't switch the game version", true, "TOTKDroid can't write to its data folder.");
         return;
     }
 #ifdef __ANDROID__
     g_switching_to = v;
     g_switch_at = ImGui::GetTime() + 0.6;
 #else
-    set_job(std::string(tr("Restart TOTKRecompAndroid to play version")) + " " + version_name(v) + ".");
+    set_job(std::string(tr("Restart TOTKDroid to play version")) + " " + version_name(v) + ".");
 #endif
 }
 
@@ -1351,7 +1351,7 @@ static void version_rows(bool busy, bool focus) {
                            tr(!set_up ? "Not set up yet: choose the folder with this version's game files below."
                                       : "Which version PLAY starts. Each one keeps its own game files, saves and settings; "
                                         "another one starts from a copy of the main version's saves and settings. Choosing another "
-                                        "one starts TOTKRecompAndroid again with it.");
+                                        "one starts TOTKDroid again with it.");
         if (busy || g_switching_to || (!set_up && v != cur)) opt_disable_next();
         if (opt_radio(label.c_str(), v == cur, desc.c_str()) && v != cur && set_up) switch_to_version(v);
         if (focus && v == cur) ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
@@ -1457,10 +1457,10 @@ static void prelaunch_tab(float sc) {
         changed |= tri("lrz", &g_settings.turnip_lrz);
         ImGui::TextDisabled("%s", tr("Turnip's early depth test, a little faster. Off can fix missing or broken drawing on "
                                   "some Adreno GPUs. Automatic: on for Adreno 8xx GPUs, off for the others. Applies when "
-                                  "TOTKRecompAndroid restarts."));
+                                  "TOTKDroid restarts."));
         bool lrz_now = g_settings.turnip_lrz < 0 ? a8 : g_settings.turnip_lrz != 0;
         if (lrz_now != vk_lrz_at_start()) {  // (Turnip reads it once, when the app starts)
-            ImGui::Text("%s", tr("Restart TOTKRecompAndroid to apply it."));
+            ImGui::Text("%s", tr("Restart TOTKDroid to apply it."));
             ImGui::SameLine();
             ImGui::PushID("lrz");  // (the driver's own Restart now may be showing too)
             if (ImGui::Button(tr("Restart now"))) {
@@ -1524,7 +1524,7 @@ static void prelaunch_tab(float sc) {
         ImGui::PushFont(g_font_menu);
         ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "%s", tr("Are you sure?"));
         ImGui::PopFont();
-        ImGui::Text(tr("This deletes TOTKRecompAndroid's copy of the game files (%.1f GB)."), gb);
+        ImGui::Text(tr("This deletes TOTKDroid's copy of the game files (%.1f GB)."), gb);
         ImGui::TextDisabled("%s", tr("Saves and settings are kept. Your own game files aren't touched."));
         if (rt_dev_mode()) {  // (a source checkout: the files are the project's own extracted/)
             bool abs = !g_root.empty() && (g_root[0] == '/' || (g_root.size() > 1 && g_root[1] == ':'));
@@ -1534,7 +1534,7 @@ static void prelaunch_tab(float sc) {
         ImGui::Spacing();
         if (ImGui::Button(tr("Delete"), ImVec2(220 * sc, 0))) {
             bool ok = rt_remove_game_files(g_root.c_str());  // (runtime/paths.c: only what the extraction made)
-            set_job(ok ? "Game files deleted." : "Could not delete the game files (not in TOTKRecompAndroid's data folder?).", !ok);
+            set_job(ok ? "Game files deleted." : "Could not delete the game files (not in TOTKDroid's data folder?).", !ok);
             g_files_deleted = true, gb = -1;
             ImGui::CloseCurrentPopup();
         }
@@ -1856,7 +1856,7 @@ extern "C" void launcher_run(const char *root) {
             ImGui::SetCursorPos(ImVec2(x0, 120 * s));
             ImGui::PushFont(g_font_title);
             if (page == MAIN) {  // gold to orange, shadowed (not behind the Settings / Game Files windows)
-                const char *t = "TOTKRecompAndroid";
+                const char *t = "TOTKDroid";
                 ImVec2 p = ImGui::GetCursorScreenPos();
                 text_fx(ImGui::GetWindowDrawList(), ImGui::GetFont(), ImGui::GetFontSize(), p, IM_COL32(255, 232, 120, 255),
                         IM_COL32(255, 138, 48, 255), t, 3 * s);
@@ -2073,16 +2073,16 @@ extern "C" void launcher_run(const char *root) {
                 std::string src_d = tr("The folder with your own game folders (exefs/romfs, or exefs and a romfs.bin) of The Legend of Zelda: Tears of "
                                        "the Kingdom for Nintendo Switch, with its update 1.4.3 applied. The version is told from "
                                        "the files, and each one is set up in a place of its own, beside the others. The game "
-                                       "isn't included with TOTKRecompAndroid.");
+                                       "isn't included with TOTKDroid.");
                 if (!src.empty()) src_d += std::string(tr("\n\nChosen: ")) + src;
                 // the step that's running / its result, under the rows and in the Set up row's explanation
                 const std::string &job_line = job;
                 bool copied = check_copied_files(g_root).empty();  // (here, the game code to build again: an app update)
-                std::string ex_d = tr(native_wanted() ? "Copies the game files TOTKRecompAndroid needs (native game code: "
+                std::string ex_d = tr(native_wanted() ? "Copies the game files TOTKDroid needs (native game code: "
                                                         "nothing to build). Your own files aren't changed."
                                       : copied ? "The game files are already here: this builds the game code from them again, as "
-                                                 "TOTKRecompAndroid needs after an update. It may take a while."
-                                               : "Copies the game files TOTKRecompAndroid needs and recompiles the game from them. "
+                                                 "TOTKDroid needs after an update. It may take a while."
+                                               : "Copies the game files TOTKDroid needs and recompiles the game from them. "
                                                  "This only needs to be done once and may take a while. Your own files aren't changed.");
                 if (!job.empty()) ex_d += "\n\n" + std::string(tr(job.c_str())) + (job_hint.empty() ? "" : ".\n" + std::string(tr(job_hint.c_str())));
                 if (failed && !job_detail.empty()) ex_d += "\n(" + job_detail + ")";
@@ -2102,7 +2102,7 @@ extern "C" void launcher_run(const char *root) {
                     int w = g_settings.files_in_place ? 1 : 0;
                     if (busy) opt_disable_next();
                     opt_choice("Game files", &w, ways, 2, 0,
-                               "Copy them: the setup copies the game data (about 17 GB) into TOTKRecompAndroid's folder - "
+                               "Copy them: the setup copies the game data (about 17 GB) into TOTKDroid's folder - "
                                "your folder can be moved or deleted afterwards.\n\n"
                                "Use them in place: the game reads its data from your folder, no copy - it saves the space "
                                "and the wait. It needs the permission to access all files (Android asks), and the folder "
@@ -2136,14 +2136,14 @@ extern "C" void launcher_run(const char *root) {
                     files_gb = -1;  // (re-measured after a setup)
                 }
                 if (ready) {
-                    // DELETE: frees TOTKRecompAndroid's copy (runtime/paths.c removes only what the setup made, only inside
+                    // DELETE: frees TOTKDroid's copy (runtime/paths.c removes only what the setup made, only inside
                     // the data root). Saves, settings and the user's own files stay.
                     if (files_gb < 0) files_gb = rt_game_files_size(g_root.c_str()) / 1e9;
                     char gb[32];
                     snprintf(gb, sizeof gb, "%.1f GB", files_gb);
                     opt_section("Game files");
                     if (!g_confirm_delete) {
-                        if (opt_action("Delete game files", gb, "Frees the space TOTKRecompAndroid's copy of the game files takes. "
+                        if (opt_action("Delete game files", gb, "Frees the space TOTKDroid's copy of the game files takes. "
                                        "Saves and settings are kept, and your own game files aren't touched: you can "
                                        "set the game files up again from them.", true))
                             g_confirm_delete = true;
@@ -2152,7 +2152,7 @@ extern "C" void launcher_run(const char *root) {
                             bool ok = rt_remove_game_files(g_root.c_str());
                             status = check_game_files(g_root);
                             if (ok) set_job("Game files deleted.");
-                            else set_job("Couldn't delete the game files", true, "They aren't in TOTKRecompAndroid's data folder, "
+                            else set_job("Couldn't delete the game files", true, "They aren't in TOTKDroid's data folder, "
                                          "so they were left alone.");
                             if (!status.empty()) g_bg = 0;
                             g_confirm_delete = false, files_gb = -1;

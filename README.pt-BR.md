@@ -1,4 +1,4 @@
-# TOTKRecompAndroid
+# TOTKDroid
 
 [English](README.md) | **Português**
 
@@ -9,6 +9,10 @@ Switch é substituído pelo runtime, e os gráficos (NVN) são traduzidos para V
 Feito sobre o motor do **[LAS Recomp](https://github.com/peiikai/LASRecomp)**, de peiikai (uma recompilação de
 *Link's Awakening*), do seu porte para Android **[LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid)** e do
 **[BOTWRecompAndroid](https://github.com/mamcjr/BOTWRecompAndroid)**, de onde este repositório saiu.
+
+Antes chamado **TOTKRecompAndroid**: renomeado quando o código do jogo passou a rodar nativo e o build recompilado saiu
+do app (30/10/2026). O endereço antigo do repositório redireciona para cá. O app mantém o id do Android
+(`com.totkrecompandroid`), então atualiza por cima de uma cópia instalada, com os saves.
 
 > [!WARNING]
 > **No começo.** No celular (com o driver Turnip) o jogo carrega um save na caverna do prólogo e dá para mover o Link, a

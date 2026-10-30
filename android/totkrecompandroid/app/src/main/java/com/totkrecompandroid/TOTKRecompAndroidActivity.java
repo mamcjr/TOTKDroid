@@ -1,4 +1,4 @@
-// TOTKRecompAndroid on Android: SDL's activity runs the runtime (libmain.so, runtime/main.c). Before the native code starts
+// TOTKDroid on Android: SDL's activity runs the runtime (libmain.so, runtime/main.c). Before the native code starts
 // this sets up what the desktop finds next to its executable (runtime/platform/android.c, runtime/paths.c):
 // - the shipped resources (assets/res: the start screen's font, the icon) copied to <internal files>/res;
 // - the Vulkan driver: the first driver in <external files>/drivers (a .so, or an adrenotools .zip: Turnip), copied to
@@ -266,7 +266,7 @@ public class TOTKRecompAndroidActivity extends SDLActivity {
                     self.startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
                 }
             });
-            nativeImportDetail("Allow TOTKRecompAndroid to access all files (the page Android just opened), then choose the folder again");
+            nativeImportDetail("Allow TOTKDroid to access all files (the page Android just opened), then choose the folder again");
             nativeImportDone(5);
             return;
         }
@@ -1292,7 +1292,7 @@ public class TOTKRecompAndroidActivity extends SDLActivity {
         if (android.os.Build.VERSION.SDK_INT >= 30 && !android.os.Environment.isExternalStorageManager()) {
             self.runOnUiThread(() -> self.startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
                     Uri.parse("package:" + self.getPackageName()))));
-            nativeModImportDone("0|Allow TOTKRecompAndroid to access all files (the page Android just opened), then import the mod again.");
+            nativeModImportDone("0|Allow TOTKDroid to access all files (the page Android just opened), then import the mod again.");
             return;
         }
         importMod(dir);
