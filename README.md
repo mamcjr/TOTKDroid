@@ -2,9 +2,9 @@
 
 **English** | [Português](README.pt-BR.md)
 
-A static recompilation of *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, version **1.4.3**) for
-Android, in its first steps. This is **not emulation**: the game's ARM64 code becomes C compiled for your phone, and its
-graphics (NVN) are translated to Vulkan.
+A native port of *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, version **1.4.3**) for Android, in its
+first steps. This is **not emulation**: the game's own ARM64 code runs directly on your phone's CPU, the Switch's system
+is replaced by the runtime, and its graphics (NVN) are translated to Vulkan.
 
 It is built on the engine of **[LAS Recomp](https://github.com/peiikai/LASRecomp)** by peiikai (a recompilation of
 *Link's Awakening*), its Android port **[LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid)** and
@@ -26,8 +26,10 @@ Android only (arm64, Vulkan). Windows, Linux or macOS may be used as development
 - 1.4.3 runs on Nintendo SDK 20.5.22, the line of BOTW 1.8.2's 20.5.6 (NVN 55): what the engine learned from BOTW 1.8.2
   applies. The game's patches and much of what is known about it come from
   [MacNativeGames](https://github.com/ly05010419/MacNativeGames), which runs this very build natively on Macs and iPhones.
-- The game's code generates and builds: 228,238 functions from `main` and 40,516 from the SDK, in a 224 MB
-  `totkgame.so`.
+- The game's code runs natively on the phone's CPU, so setting the game up only copies its files. The static
+  recompilation (228,238 functions from `main` and 40,516 from the SDK, in a 224 MB `totkgame.so`) is kept for
+  development (`LARECOMP_NATIVE=0`): walking in the cave it swung the frame time (sd 7.4 ms against 0.6 natively) and
+  took hours to build on the phone, so the app no longer ships its builder.
 - On the phone (POCO F7 Ultra, the Turnip driver): the title screen, then a save loaded in the prologue's cave with
   Link under control and the HUD and hints in Portuguese, at about 30 fps walking around (Turnip). The scene is held at 1600x896 (the game's
   dynamic resolution gave black frames at each step) and the world steps by real time. Character voices, music and
@@ -52,8 +54,9 @@ With the Android SDK / NDK and your dump in `Dump/0100F2C0115B6000/` (`exefs/` a
 ```bash
 cd tools && python totk_dump.py                              # check the dump (modules, version, romfs)
 cd android/totkrecompandroid && ./gradlew assembleDebug      # the app
-android/build_gamelib.sh Dump/0100F2C0115B6000/exefs         # the game code (~20 min on a PC)
-ROMFS_HOST=1 android/push_game.sh Dump/0100F2C0115B6000      # game files and game code onto the phone
+ROMFS_HOST=1 android/push_game.sh Dump/0100F2C0115B6000      # the game files onto the phone
+# optional, development only - the recompiled game code (run it with LARECOMP_NATIVE=0):
+# android/build_gamelib.sh Dump/0100F2C0115B6000/exefs       # ~20 min on a PC, then push_game.sh again
 android/run_boot.sh 120                                      # start the game, log to android/out/boot.log
 ```
 

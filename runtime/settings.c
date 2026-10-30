@@ -48,7 +48,9 @@ Settings g_settings = {
 #endif
 #ifdef __ANDROID__
     .upscaler = UPSCALE_SGSR1,  // (one pass: ~1 ms on the Adreno 830 to 2560x1440, FSR 1's two ~2.7 ms; 40 fps against 38)
-    .native_code = false,       // (an experiment: runtime/native.c)
+    .native_code = true,        // (the game's own code on the CPU, runtime/native.c. Same walk in the prologue cave, 2026-10-30:
+                                // recompiled 27.7 fps, frame time sd 7.4 ms, 25% of frames over 36 ms, 1.5 cores of game
+                                // threads; native 30.0 fps, sd 0.6 ms, none over 36 ms, 0.86 cores)
     .sync_lag = true,           // (the CPU's reads of GPU results a frame old - nvn/objects.c nvnSyncWait - so the game's next
                                 // frame overlaps the render thread and the GPU: +16.9% in TOTK, 22.0 -> 25.7 fps on the POCO
                                 // F7 Ultra, Great Sky Island, LARECOMP_AB=120:synclag in one launch, 2026-10-30; it starts

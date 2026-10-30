@@ -185,7 +185,10 @@ public class TOTKRecompAndroidActivity extends SDLActivity {
     // ---- the game code's builder: assets/gen, unpacked only when its bundled content changes (runtime/gamebuild.c)
     private void unpackGen(File dir) throws IOException {
         String[] top = getAssets().list("gen");
-        if (top == null || top.length == 0) return;  // (an APK without it: android/deps/build_gen_deps.sh not run)
+        if (top == null || top.length == 0) {  // (an APK without it - the usual one since the game runs natively,
+            if (dir.exists()) deleteTree(dir);  // runtime/native.c: an earlier app's unpacked copy, ~250 MB, goes)
+            return;
+        }
         String stamp;
         try (InputStream in = getAssets().open("gen.id")) {
             stamp = "sha256:" + new String(readAll(in), java.nio.charset.StandardCharsets.US_ASCII).trim();

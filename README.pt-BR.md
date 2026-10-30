@@ -2,9 +2,9 @@
 
 [English](README.md) | **Português**
 
-Uma recompilação estática de *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, versão **1.4.3**) para
-Android, nos primeiros passos. **Não é emulação**: o código ARM64 do jogo vira C compilado para o seu celular, e os
-gráficos (NVN) são traduzidos para Vulkan.
+Um port nativo de *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, versão **1.4.3**) para Android, nos
+primeiros passos. **Não é emulação**: o próprio código ARM64 do jogo roda direto na CPU do seu celular, o sistema do
+Switch é substituído pelo runtime, e os gráficos (NVN) são traduzidos para Vulkan.
 
 Feito sobre o motor do **[LAS Recomp](https://github.com/peiikai/LASRecomp)**, de peiikai (uma recompilação de
 *Link's Awakening*), do seu porte para Android **[LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid)** e do
@@ -28,7 +28,10 @@ Android.
   com o BOTW 1.8.2 vale. Os patches do jogo e muito do que se sabe dele vêm do
   [MacNativeGames](https://github.com/ly05010419/MacNativeGames), que roda exatamente esta versão nativa em Macs e
   iPhones.
-- O código do jogo é gerado e compila: 228.238 funções do `main` e 40.516 do SDK, num `totkgame.so` de 224 MB.
+- O código do jogo roda nativo na CPU do celular: configurar o jogo só copia os arquivos. A recompilação estática
+  (228.238 funções do `main` e 40.516 do SDK, num `totkgame.so` de 224 MB) fica para desenvolvimento
+  (`LARECOMP_NATIVE=0`): andando na caverna o frametime oscilava (desvio de 7,4 ms contra 0,6 no nativo) e o build no
+  celular levava horas, então o app não traz mais o compilador.
 - No celular (POCO F7 Ultra, driver Turnip): a tela título e depois um save carregado na caverna do prólogo, com o
   Link controlável e o HUD e as dicas em português, a cerca de 30 fps andando (Turnip). A cena fica em 1600x896 (a resolução dinâmica
   do jogo dava quadros pretos a cada troca) e o mundo anda pelo tempo real. As vozes dos personagens, a música e o
@@ -53,8 +56,9 @@ Com o SDK / NDK do Android e o seu dump em `Dump/0100F2C0115B6000/` (`exefs/` e 
 ```bash
 cd tools && python totk_dump.py                              # confere o dump (módulos, versão, romfs)
 cd android/totkrecompandroid && ./gradlew assembleDebug      # o app
-android/build_gamelib.sh Dump/0100F2C0115B6000/exefs         # o código do jogo (~20 min num PC)
-ROMFS_HOST=1 android/push_game.sh Dump/0100F2C0115B6000      # arquivos e código do jogo para o celular
+ROMFS_HOST=1 android/push_game.sh Dump/0100F2C0115B6000      # os arquivos do jogo para o celular
+# opcional, só para desenvolvimento - o código recompilado (rode com LARECOMP_NATIVE=0):
+# android/build_gamelib.sh Dump/0100F2C0115B6000/exefs       # ~20 min num PC, depois push_game.sh de novo
 android/run_boot.sh 120                                      # inicia o jogo, log em android/out/boot.log
 ```
 

@@ -2096,23 +2096,7 @@ extern "C" void launcher_run(const char *root) {
                 // the folder: this version's files when they aren't set up, else another version's (or this one's again)
                 opt_section("Your copy of the game");
 #ifdef __ANDROID__
-                {   // how the game's code runs - chosen before the folder (picking it sets the game up at once): built
-                    // from the files (recompiled) or the game's own on the CPU (native: no build; runtime/native.c)
-                    static const char *const modes[] = {"Recompiled", "Native (experimental)"};
-                    int m = g_settings.native_code ? 1 : 0;
-                    if (busy) opt_disable_next();
-                    opt_choice("Game code", &m, modes, 2, 0,
-                               "Recompiled: the setup rebuilds the game's code for this phone from your files (once, it may "
-                               "take a while). Set up this way, the game can still run natively: Video > Native game code.\n\n"
-                               "Native: the game's own code runs directly on the phone's CPU, so the setup only copies the "
-                               "files - no build. An experiment. Switching to Recompiled later means building the game code "
-                               "then.");
-                    if ((m == 1) != g_settings.native_code) {
-                        g_settings.native_code = m == 1;
-                        settings_save();
-                        status = check_game_files(g_root);
-                    }
-                }
+                // (no "Game code" choice: the game's own code always runs on the CPU - runtime/native.c native_wanted)
                 {   // copied, or read where they are (the romfs/: services/fs.c romfs.link; the exefs/ is copied, small)
                     static const char *const ways[] = {"Copy them", "Use them in place"};
                     int w = g_settings.files_in_place ? 1 : 0;

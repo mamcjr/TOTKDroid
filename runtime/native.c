@@ -36,11 +36,18 @@ static pthread_mutex_t tab_lock = PTHREAD_MUTEX_INITIALIZER;
 void native_enter(Cpu *c, uint64_t addr);  // native_gate.S
 extern char native_svc_gate[], native_hle_gate[];
 
-// Chosen per boot (main.c boot): the setting (Native game code), or LARECOMP_NATIVE=0/1 over it
+// Chosen per boot (main.c boot). Android: always native since 2026-10-30 - the recompiled game swung its frame time
+// (a walk in the prologue cave: 27.7 fps, sd 7.4 ms, against 30.0 fps, sd 0.6 ms natively) and needed hours of build;
+// the app no longer ships the game code's builder. LARECOMP_NATIVE=0 (development: a totkgame.so pushed by
+// android/push_game.sh) runs it recompiled. Elsewhere the setting (Native game code), LARECOMP_NATIVE=0/1 over it.
 static bool g_on;
 bool native_wanted(void) {
     const char *e = getenv("LARECOMP_NATIVE");
+#ifdef __ANDROID__
+    return e ? atoi(e) != 0 : true;
+#else
     return e ? atoi(e) != 0 : g_settings.native_code;
+#endif
 }
 void native_begin_boot(void) { g_on = native_wanted(); }
 bool native_on(void) { return g_on; }
