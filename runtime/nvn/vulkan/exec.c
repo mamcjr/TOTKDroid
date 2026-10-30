@@ -2446,12 +2446,18 @@ static VkPipelineLayout make_layout(Prog *p, int nsets, VkShaderStageFlags s0, V
 static void save_glsl(const char *src, uint64_t addr, const char *suffix) {
     if (!getenv("LARECOMP_SAVE_MSL")) return;
 #ifdef __ANDROID__
-    char path[1100];  // (in the data folder, where adb reads it: <external files>/build/glsl)
-    snprintf(path, sizeof path, "%s/build", rt_data_root());
+    char path[1100];  // (in the data folder: <external files>/build/glsl - or LARECOMP_DEBUG_DIR/glsl, for phones whose
+                      // shell can't read what the app writes there, HyperOS)
+    const char *dbg = getenv("LARECOMP_DEBUG_DIR");
+    if (dbg) snprintf(path, sizeof path, "%s/glsl", dbg);
+    else {
+        snprintf(path, sizeof path, "%s/build", rt_data_root());
+        mkdir(path, 0755);
+        snprintf(path, sizeof path, "%s/build/glsl", rt_data_root());
+    }
     mkdir(path, 0755);
-    snprintf(path, sizeof path, "%s/build/glsl", rt_data_root());
-    mkdir(path, 0755);
-    snprintf(path, sizeof path, "%s/build/glsl/%llx_%s.glsl", rt_data_root(), (unsigned long long)addr, suffix);
+    size_t pl = strlen(path);
+    snprintf(path + pl, sizeof path - pl, "/%llx_%s.glsl", (unsigned long long)addr, suffix);
 #else
     mkdir("build/glsl", 0755);
     char path[256];
