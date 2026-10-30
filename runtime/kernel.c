@@ -506,7 +506,14 @@ static uint32_t thread_set_core_mask(KThread *t, int ideal, uint64_t mask) {
 #endif
         __atomic_store_n(&t->core, core, __ATOMIC_RELEASE);
 #ifdef __ANDROID__
-        if (core != old_core && t->started && c0_on && !t->core0_evicted) {
+        // (a safe-point handover only for a thread holding core 0, or one moved onto it - which may be running on
+        // another core right now. One moved off core 0 while not holding it - waiting, woken below, or blocked
+        // elsewhere - sees its new core at its next acquire. Marking those too kept g_fnprof's bit 2 set while they
+        // stayed blocked: every function entry of the game went through fnprof_hit and kernel_preempt_point, ~8% of
+        // the game threads' time with their TLS lookups, TOTK walking 2026-10-30. LARECOMP_C0_EVICT_ALL=1: as before)
+        static int evict_all = -1;
+        if (evict_all < 0) evict_all = getenv("LARECOMP_C0_EVICT_ALL") != NULL;
+        if (core != old_core && t->started && c0_on && !t->core0_evicted && (t->core0_held || core == 0 || evict_all)) {
             __atomic_store_n(&t->core0_evicted, true, __ATOMIC_RELEASE);
             if (c0_nevicted++ == 0) __atomic_fetch_or(&g_fnprof, 2, __ATOMIC_SEQ_CST);
         }

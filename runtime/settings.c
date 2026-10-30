@@ -49,8 +49,10 @@ Settings g_settings = {
 #ifdef __ANDROID__
     .upscaler = UPSCALE_SGSR1,  // (one pass: ~1 ms on the Adreno 830 to 2560x1440, FSR 1's two ~2.7 ms; 40 fps against 38)
     .native_code = false,       // (an experiment: runtime/native.c)
-    .sync_lag = false,          // (on: a few more fps, the CPU's reads of GPU results a frame old - nvn/objects.c nvnSyncWait;
-                                // BOTW saw Link's legs sink and white water with it. Off in TOTK until tested there)
+    .sync_lag = true,           // (the CPU's reads of GPU results a frame old - nvn/objects.c nvnSyncWait - so the game's next
+                                // frame overlaps the render thread and the GPU: +16.9% in TOTK, 22.0 -> 25.7 fps on the POCO
+                                // F7 Ultra, Great Sky Island, LARECOMP_AB=120:synclag in one launch, 2026-10-30; it starts
+                                // 300 frames after each load. BOTW saw Link's legs sink with it: to check in TOTK's play)
     .out_lines = OUT_AUTO,      // (POCO F7 Ultra, 3200x1440, 1.8.2's Great Plateau: GPU 22.8 ms a frame at the screen's,
                                 // 18.6 at 1080 lines with a larger scene - the final image's passes over 2.2x the pixels)
 #else

@@ -1099,13 +1099,66 @@ static void guest_copy_invalidate(uint64_t lo, uint64_t hi) {
         if (gcopy[s].seq == seq && gcopy[s].addr < hi && lo < gcopy[s].addr + gcopy[s].size) gcopy[s].seq = 0;
     }
 }
-static VkSpan guest_copy(uint64_t addr, uint64_t size) {
-    uint64_t seq = vk_pending_seq() + (gcopy_gen << 40), h = (addr * 0x9E3779B97F4A7C15ull) ^ (size * 0xC2B2AE3D27D4EB4Full);
+// Buffer copies made on the GPU (gpu_buffer_copy, below): their destinations, until the submission that copies is done.
+// The CPU copy they replace was in guest memory at once, so a draw reading one (guest_copy) reads the GPU's bytes.
+#define BCOPY_PEND 16
+static VkBuffer gmem_buf;  // (the heap's GPU buffer, below)
+static struct { uint64_t lo, hi, seq; } bcopy_pend[BCOPY_PEND];
+static int bcopy_npend;
+static bool bcopy_pending(uint64_t lo, uint64_t hi) {  // (render thread) drops the done ones; is [lo, hi) still to land?
+    uint64_t done = vk_completed_seq();
+    bool hit = false;
+    int k = 0;
+    for (int i = 0; i < bcopy_npend; i++) {
+        if (bcopy_pend[i].seq <= done) continue;
+        if (bcopy_pend[i].lo < hi && lo < bcopy_pend[i].hi) hit = true;
+        bcopy_pend[k++] = bcopy_pend[i];
+    }
+    bcopy_npend = k;
+    return hit;
+}
+
+uint64_t prof_gcopy_bytes, prof_gcopy_reused;  // (LARECOMP_VK_PROF: bytes copied, and bytes a copy already made served)
+// (LARECOMP_VK_PROF: bytes copied by kind - shader constants, uniform buffers, vertices - and by where the source is:
+// the heap, the physical memory alias region, elsewhere)
+enum { GC_CONST, GC_UBO, GC_VTX };
+static uint64_t prof_gcopy_kind[3], prof_gcopy_where[3], prof_gcopy_alias[16];  // (alias: by 256 MB from its base)
+static VkSpan guest_copy(uint64_t addr, uint64_t size, int kind) {
+    // Keyed by the address alone: one with the same start and at least this size, made for this submission, serves.
+    // A draw's vertex copy is its highest index times the stride, so draws reading the same buffer asked for
+    // different sizes and each made its own copy - TOTK's vertex data in its physical memory region, outside the
+    // heap's GPU buffer: ~31% of the render thread's memcpy, 2026-10-30.
+    // A range a GPU buffer copy still writes: bound in the heap's own buffer (the copies are only made with the heap
+    // placed), read after the copy in queue order. Never a wait here - this runs inside a draw, with its pass begun and
+    // its command buffer in hand, and a submission there crashed Turnip (2026-10-30). A uniform range off the offset
+    // alignment can't be bound in place: it gets the bytes from before the copy (logged).
+    if (bcopy_npend && bcopy_pending(addr, addr + size)) {
+        uint64_t off = addr - HEAP_BASE;
+        if (kind == GC_VTX || !(off % g_vk.props.limits.minUniformBufferOffsetAlignment))
+            return (VkSpan){gmem_buf, off, (void *)(uintptr_t)addr};
+        static int nlog;
+        if (nlog++ < 8) LOG("[vk] uniforms at %llx read before a GPU buffer copy into them lands (offset not aligned)\n", (unsigned long long)addr);
+    }
+    uint64_t seq = vk_pending_seq() + (gcopy_gen << 40), h = addr * 0x9E3779B97F4A7C15ull;
     if (gcopy_active_seq != seq) { gcopy_active_seq = seq; gcopy_nactive = 0; }
     uint32_t slot = (uint32_t)(h ^ (h >> 32)) & (GCOPY_TAB - 1);
-    if (gcopy[slot].seq == seq && gcopy[slot].addr == addr && gcopy[slot].size == size) return gcopy[slot].span;
+    if (gcopy[slot].seq == seq && gcopy[slot].addr == addr && (gcopy[slot].size == size || (gcopy[slot].size > size && AB("gcreuse") != 0))) {
+        prof_gcopy_reused += size;
+        return gcopy[slot].span;
+    }
+    prof_gcopy_bytes += size;
+    prof_gcopy_kind[kind] += size;
+    prof_gcopy_where[addr >= HEAP_BASE && addr < HEAP_BASE + HEAP_MAX ? 0 : addr >= ALIAS_BASE && addr < ALIAS_BASE + ALIAS_SIZE ? 1 : 2] += size;
+    if (addr >= ALIAS_BASE && addr < ALIAS_BASE + ALIAS_SIZE) prof_gcopy_alias[(addr - ALIAS_BASE) >> 28] += size;
     if (gcopy[slot].seq != seq && gcopy_nactive < GCOPY_TAB) gcopy_active[gcopy_nactive++] = (uint16_t)slot;
     VkSpan s = vk_transient_copy((const void *)(uintptr_t)addr, size, 256);
+    static int log_copy = -1, logged_copy;
+    if (log_copy < 0) log_copy = getenv("LARECOMP_LOG_GUEST_COPY") != NULL;
+    static long log_copy_from = -1;
+    if (log_copy_from < 0) { const char *e = getenv("LARECOMP_LOG_GUEST_COPY_FROM"); log_copy_from = e ? atol(e) : 0; }
+    if (log_copy && renderer_present_count() >= (uint64_t)log_copy_from && size >= 65536 && logged_copy++ < 32)
+        LOG("[guest-copy] addr %llx size %llu seq %llu\n", (unsigned long long)addr,
+            (unsigned long long)size, (unsigned long long)vk_pending_seq());
     stat_cb_copied += size;
     gcopy[slot].addr = addr; gcopy[slot].size = size; gcopy[slot].seq = seq; gcopy[slot].span = s;
     return s;
@@ -1352,11 +1405,28 @@ const char *renderer_stats(void) {
         snprintf(stats_text + n, sizeof stats_text - n, " | sets: driver %.0f cbuf %.0f ms, cache %llu hits %llu misses",
                  prof_dsw / 1e6, prof_cbuf / 1e6, (unsigned long long)prof_set_hits, (unsigned long long)prof_set_miss);
         prof_dsw = prof_cbuf = prof_set_hits = prof_set_miss = 0;
-        extern uint64_t prof_tex_checks, prof_tex_samples, prof_tex_full, prof_tex_full_bytes, prof_tex_dyn;
+        extern uint64_t prof_tex_checks, prof_tex_samples, prof_tex_full, prof_tex_full_bytes, prof_tex_dyn, prof_tex_same_bytes,
+            prof_tex_snap_bytes, prof_tex_calm_bytes;
         n = strlen(stats_text);
-        snprintf(stats_text + n, sizeof stats_text - n, " | tex checks %llu samples %llu full %llu (%.1f MB, dynamic %llu)",
+        snprintf(stats_text + n, sizeof stats_text - n, " | tex checks %llu samples %llu full %llu (%.1f MB, dynamic %llu; "
+                 "%.1f MB of them unchanged; %.1f MB compared with a snapshot; %.1f MB calm, only sampled)",
                  (unsigned long long)prof_tex_checks, (unsigned long long)prof_tex_samples, (unsigned long long)prof_tex_full,
-                 prof_tex_full_bytes / 1048576.0, (unsigned long long)prof_tex_dyn);
+                 prof_tex_full_bytes / 1048576.0, (unsigned long long)prof_tex_dyn, prof_tex_same_bytes / 1048576.0,
+                 prof_tex_snap_bytes / 1048576.0, prof_tex_calm_bytes / 1048576.0);
+        prof_tex_same_bytes = prof_tex_snap_bytes = prof_tex_calm_bytes = 0;
+        n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n, " | guest copies %.1f MB (constants %.1f, uniforms %.1f, vertices %.1f; heap %.1f, alias %.1f, other %.1f), %.1f MB served by one already made",
+                 prof_gcopy_bytes / 1048576.0, prof_gcopy_kind[0] / 1048576.0, prof_gcopy_kind[1] / 1048576.0,
+                 prof_gcopy_kind[2] / 1048576.0, prof_gcopy_where[0] / 1048576.0, prof_gcopy_where[1] / 1048576.0,
+                 prof_gcopy_where[2] / 1048576.0, prof_gcopy_reused / 1048576.0);
+        prof_gcopy_bytes = prof_gcopy_reused = 0;
+        memset(prof_gcopy_kind, 0, sizeof prof_gcopy_kind);
+        memset(prof_gcopy_where, 0, sizeof prof_gcopy_where);
+        n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n, " | alias copies by 256 MB:");
+        for (int i = 0; i < 16; i++)
+            if (prof_gcopy_alias[i]) { n = strlen(stats_text); snprintf(stats_text + n, sizeof stats_text - n, " %d:%.0f", i, prof_gcopy_alias[i] / 1048576.0); }
+        memset(prof_gcopy_alias, 0, sizeof prof_gcopy_alias);
         n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n, " | pass ends:");
         for (int l = 0; l < 4096; l++)
@@ -3713,7 +3783,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
         NvnShaderStage *ss = &st.program->stages[stage];
         uint64_t size = ss->const_size ? ss->const_size : 16;
         if (size < si->cbuf_size[1]) size = si->cbuf_size[1];
-        return ubo_span(guest_copy(ss->code_addr + ss->const_offset, size), size);  // (constant: shared per submission)
+        return ubo_span(guest_copy(ss->code_addr + ss->const_offset, size, GC_CONST), size);  // (constant: shared per submission)
     }
     int idx = k - 3;  // cbuf_base
     Range r = (idx >= 0 && idx < 18) ? st.ubuf[stage][idx] : (Range){0, 0};
@@ -3891,7 +3961,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     stat_cb_n[dk]++, stat_cb_bytes[dk] += size;
     if (dk && ct_on()) LOG("[ct] dyncbuf stage %d k %d addr %llx size %llx (bound %llx) fs %016llx\n", stage, k, (unsigned long long)r.addr,
                            (unsigned long long)size, (unsigned long long)r.size, (unsigned long long)g_cur_fs_hash);
-    return ubo_span(guest_copy(r.addr, size), size);
+    return ubo_span(guest_copy(r.addr, size, GC_UBO), size);
 }
 
 // Global memory (shader LDG/STG, maxwell_gmem_base = HEAP_BASE): the guest heap imported as a GPU buffer
@@ -3903,6 +3973,32 @@ static VkDeviceMemory gmem_mem;
 static uint64_t gmem_size;
 #ifdef __ANDROID__
 static bool gmem_placed;  // (gmem_buf is the guest heap itself, usable as a uniform buffer: vk_heap_place)
+
+// CopyBufferToBuffer within the heap's GPU buffer, done by the GPU in its place in the queue. The CPU copy waited for
+// the GPU to finish everything before it (renderer_flush): TOTK copies 304 bytes a compute shader just wrote into one
+// of two buffers every frame, and that wait stalled the render thread and left the GPU idle once a frame (~2.7 ms,
+// 2026-10-30). Small copies only, both ends in the heap buffer, not overlapping, the source not itself a copy still to
+// land; the destination is pending until its submission is done (bcopy_pending: a draw reading it binds the heap buffer
+// itself, guest_copy). The game reads it on the CPU only after a fence, which waits for the GPU as before.
+// LARECOMP_VK_GPU_BUFCOPY=0: the CPU copy.
+static bool gpu_buffer_copy(uint64_t src, uint64_t dst, uint64_t size) {
+    static int on = -1;
+    if (on < 0) on = !getenv("LARECOMP_VK_GPU_BUFCOPY") || atoi(getenv("LARECOMP_VK_GPU_BUFCOPY"));
+    if (!on || AB("bufcopy") == 0 || !gmem_placed || !size || size > 4096 || bcopy_npend >= BCOPY_PEND) return false;
+    if (src < HEAP_BASE || src + size > HEAP_BASE + gmem_size || dst < HEAP_BASE || dst + size > HEAP_BASE + gmem_size) return false;
+    if (src < dst + size && dst < src + size) return false;
+    if (bcopy_pending(src, src + size)) return false;
+    vk_end_pass();
+    VkCommandBuffer cb = vk_cmd();
+    vk_full_barrier(cb);
+    VkBufferCopy c = {src - HEAP_BASE, dst - HEAP_BASE, size};
+    vkCmdCopyBuffer(cb, gmem_buf, gmem_buf, 1, &c);
+    vk_full_barrier(cb);
+    bcopy_pend[bcopy_npend].lo = dst; bcopy_pend[bcopy_npend].hi = dst + size;
+    bcopy_pend[bcopy_npend++].seq = vk_pending_seq();
+    guest_copy_invalidate(dst, dst + size);
+    return true;
+}
 
 static bool ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) {
     static int on = -1;
@@ -6531,7 +6627,7 @@ static void draw_(CmdRec *r, bool indexed) {
                     sp = (VkSpan){dbuf, doff, NULL};
                 else
 #endif
-                    sp = guest_copy(v.addr, need ? need : 16);
+                    sp = guest_copy(v.addr, need ? need : 16, GC_VTX);
             }
         }
         VkDeviceSize off = sp.off;
@@ -7788,6 +7884,9 @@ static void exec_list(uint64_t handle, int depth) {
         }
         case CMD_WAIT_EVENT: break;  // (one queue, in order: what it waits for already ran - or is the CPU's to signal)
         case CMD_COPY_BUFFER_TO_BUFFER:
+#ifdef __ANDROID__
+            if (gpu_buffer_copy(r->x[0], r->x[1], r->x[2])) break;
+#endif
             wait_why = "buffer -> buffer copy";
             {   // LARECOMP_LOG_BUFCOPY=1: the first 30 (where in the frame, how large: each waits for the GPU here)
                 static int log = -1, n;

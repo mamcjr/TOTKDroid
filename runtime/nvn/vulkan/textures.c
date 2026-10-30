@@ -75,7 +75,15 @@ static VkFmt fmt_of(uint32_t f) {
     case 0x2F: return (VkFmt){VK_FORMAT_R32G32B32A32_UINT};
     case 0x30: return (VkFmt){VK_FORMAT_R32G32B32A32_SINT};
     case 0x31: return (VkFmt){VK_FORMAT_S8_UINT};
-    case 0x32: return (VkFmt){VK_FORMAT_D16_UNORM};
+    case 0x32: {
+        // (experiment) LARECOMP_VK_D16_AS_D32=1: D16 as 32-bit float. kuraeow/ultratears: TOTK classifies lighting tiles
+        // with an EQUAL test of a depth one pass writes as gl_FragDepth = material id against quads the lighting passes
+        // rasterise at that z - in a UNORM buffer the two conversions may round apart on a non-Maxwell GPU, and the world
+        // was unlit (their D16, 2026-10-23); a float buffer stores both exactly. Our walls lit by fog only?
+        static int f32 = -1;
+        if (f32 < 0) f32 = getenv("LARECOMP_VK_D16_AS_D32") && atoi(getenv("LARECOMP_VK_D16_AS_D32"));
+        return (VkFmt){f32 ? VK_FORMAT_D32_SFLOAT : VK_FORMAT_D16_UNORM};
+    }
     case 0x33: return (VkFmt){VK_FORMAT_D32_SFLOAT};  // DEPTH24 (as on Metal: no 24-bit depth there)
     case 0x34: return (VkFmt){VK_FORMAT_D32_SFLOAT};
     case 0x35: return (VkFmt){depth24_stencil8()};
@@ -801,7 +809,9 @@ static bool texture_unchanged(TexBackend *b, const uint8_t *mem, uint64_t size) 
     return false;
 }
 
-uint64_t prof_tex_checks, prof_tex_samples, prof_tex_full, prof_tex_full_bytes, prof_tex_dyn, prof_tex_watch_skips;
+uint64_t prof_tex_checks, prof_tex_samples, prof_tex_full, prof_tex_full_bytes, prof_tex_dyn, prof_tex_watch_skips,
+    prof_tex_same_bytes, prof_tex_snap_bytes, prof_tex_calm_bytes;  // (LARECOMP_VK_PROF: full hashes that found no change;
+                                                                    // snapshot compares; calm dynamic textures only sampled)
 // Opt-in CPU measurements only: no GPU queries, flushes or waits. Called on the texture upload path.
 static bool texture_trace_on(void) {
     static int on = -1;
@@ -865,8 +875,27 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
             }
         }
     }
-    if (b->uploaded && b->dynamic && !always_full && !restyle && !periodic && texture_unchanged(b, mem, total)) return;
+    if (b->uploaded && b->dynamic && !always_full && !restyle && !periodic) {
+        prof_tex_snap_bytes += total;
+        if (texture_unchanged(b, mem, total)) return;
+    }
     bool fast = tex_fast_hash();  // (runtime/nvn/tex_hash.h; LARECOMP_TEX_FASTHASH=0: the previous hashes)
+    // A large dynamic texture seen unchanged DYN_CALM full hashes in a row: hashed whole only every dyn_every frames
+    // (spread by its address), and sampled in between - a sample that differs hashes it whole at once. Without page
+    // write tracking (the placed heap) TOTK's cave hashed two of them every frame, ~25 MB: a 5120x5120 BC atlas that
+    // changed once while loading, and a 2048x4096 R8 one (flags 0x14) that changed once in ~38 looks - ~1 GB per 2 s,
+    // 97% unchanged (LARECOMP_VK_PROF, 2026-10-30). A change the sample misses shows up to dyn_every - 1 frames late.
+    // LARECOMP_TEX_DYN_EVERY=<n> (1: every frame, as before); LARECOMP_AB=<frames>:texcalm alternates it.
+    enum { DYN_CALM = 30, DYN_LARGE = 2 << 20 };
+    static int dyn_every = -1;
+    if (dyn_every < 0) dyn_every = getenv("LARECOMP_TEX_DYN_EVERY") ? atoi(getenv("LARECOMP_TEX_DYN_EVERY")) : 4;
+    extern int vk_ab(const char *what);
+    bool calm = fast && dyn_every > 1 && b->dynamic && b->uploaded && total >= DYN_LARGE && b->same_run >= DYN_CALM &&
+                !restyle && !always_full && vk_ab("texcalm") != 0;
+    if (calm && (frame + ((uintptr_t)b >> 6)) % (uint64_t)dyn_every && tex_hash_sample(mem, total) == b->dyn_sample) {
+        prof_tex_calm_bytes += total;
+        return;
+    }
     if (!full && !restyle) {
         prof_tex_samples++;
         uint64_t sh = fast ? tex_hash_sample(mem, total) : fnv_sample(mem, total);
@@ -879,7 +908,21 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     // (the sample is only compared while the texture isn't dynamic, and a dynamic one stays so: none for those)
     if (!fast) b->sample_hash = fnv_sample(mem, total);
     else if (!b->dynamic && !(b->uploaded && h != b->data_hash)) b->sample_hash = tex_hash_sample(mem, total);
-    if (b->uploaded && h == b->data_hash && !restyle) return;
+    {   // LARECOMP_LOG_TEX_DYN=1 (diagnosis): the large textures hashed whole every frame, and whether they changed
+        static int on = -1, n;
+        if (on < 0) on = getenv("LARECOMP_LOG_TEX_DYN") != NULL;
+        if (on && b->dynamic && total >= (1u << 20) && n < 400 && !(frame % 30)) {
+            n++;
+            LOG("[texdyn] frame %llu: %ux%ux%u fmt %#x flags %#x target %u levels %u at %llx+%llx %s%s\n", (unsigned long long)frame,
+                t->width, t->height, t->depth, t->format, t->flags, t->target, t->levels, (unsigned long long)t->addr,
+                (unsigned long long)total, h == b->data_hash ? "unchanged" : "CHANGED", b->gpu_owned ? " gpu-owned" : "");
+        }
+    }
+    if (b->dynamic && total >= DYN_LARGE && fast) {
+        b->same_run = b->uploaded && h == b->data_hash ? (b->same_run < 0xFFFF ? b->same_run + 1 : b->same_run) : 0;
+        b->dyn_sample = tex_hash_sample(mem, total);
+    }
+    if (b->uploaded && h == b->data_hash && !restyle) { prof_tex_same_bytes += total; return; }
     if (b->uploaded && h != b->data_hash && !b->dynamic && !always_full) {
         // LARECOMP_LOG_TEX_MISS=1 (diagnosis): a change the sampled check didn't see, found by the periodic full hash -
         // the texture showed its old contents meanwhile (the stretched-terrain curtains after a tower: gone with

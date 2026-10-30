@@ -1,4 +1,4 @@
-// Experimental GPU backing for TotK's MapPhysicalMemory region. Off by default.
+// GPU backing for TotK's MapPhysicalMemory region (on by default on the Turnip placed-memory path: budget below).
 #ifdef __ANDROID__
 #include "vk.h"
 #include "../../platform.h"
@@ -17,9 +17,13 @@ static uint64_t committed;
 static _Atomic uint64_t last_read_seq;
 uint64_t vk_vamm_last_read_seq(void) { return atomic_load(&last_read_seq); }
 
+// On by default since 2026-10-30: 1 GB from 1792 MB into the region, where TOTK's vertex data lives (the copies by
+// 256 MB: ~2 GB of the ~2.3 GB a 2 s window copied came from 2.0-2.25 GB; from 0 the alias covered almost none of it).
+// In-launch A/B in the prologue cave: the render thread 16.7 -> 14.3 ms a frame; a walk with the camera turning showed
+// no broken geometry. ~250 MB more resident memory. LARECOMP_VK_ALIAS_MB=0: off; LARECOMP_AB=<n>:vamm alternates it.
 static uint64_t budget(void) {
     const char *e = getenv("LARECOMP_VK_ALIAS_MB");
-    long mb = e ? strtol(e, NULL, 10) : 0;
+    long mb = e ? strtol(e, NULL, 10) : 1024;
     if (mb < 0) mb = 0;
     if (mb > 1024) mb = 1024;
     return (uint64_t)mb << 20;
@@ -90,7 +94,7 @@ void vk_vamm_before_map(uint64_t addr, uint64_t size) {
     unsigned first = (unsigned)((addr - ALIAS_BASE) / ALIAS_CHUNK);
     unsigned last = (unsigned)((addr - ALIAS_BASE + size - 1) / ALIAS_CHUNK);
     const char *start_env = getenv("LARECOMP_VK_ALIAS_START_MB");
-    long start_mb = start_env ? strtol(start_env, NULL, 10) : 0;
+    long start_mb = start_env ? strtol(start_env, NULL, 10) : 1792;
     if (start_mb < 0) start_mb = 0;
     uint64_t start = (uint64_t)start_mb > (ALIAS_SIZE >> 20) ? ALIAS_SIZE : (uint64_t)start_mb << 20;
     for (unsigned i = first; i <= last && i < ALIAS_CHUNKS; i++) {
