@@ -397,7 +397,14 @@ O menu de taxa de quadros na tela inicial (antes do jogo carregar, versão 0) es
 
 **Modo nativo a 60:** um travamento no carregamento (pc fora do `libmain.so`, talvez no Turnip), uma vez; não repetido.
 
-## As paredes só névoa (2026-10-29) - aberto
+## As paredes só névoa (2026-10-29) - provavelmente certo
+
+**2026-10-30, comparado com o Switch** (capturas de um walkthrough que o usuário mandou): no console, a caverna do
+prólogo também é névoa verde-azulada. As paredes e o templo aparecem lavados de névoa, e só o Link e o que uma luz local
+alcança (o dispositivo Zonai) ficam iluminados. É o que o port mostra. O dump abaixo, com os passes de luz somando zero
+nas paredes, combina com uma caverna sem luz direta. Fica para conferir de perto: a parede iluminada por uma luz
+local (a 3ª captura do Switch) e o tom exato da névoa.
+
 
 O usuário, jogando: "as paredes estão com uma nevoa [...] a agua esta escura", a 30 e a 60. É o sintoma das cutscenes
 (26/10), agora em gameplay e sempre no mesmo lugar: com a cópia do autosave dele (ruínas com um anel de pedra, Link
@@ -430,6 +437,13 @@ verde-azulada e só o Link tem luz.
   (legível: `own_save` faz a cópia do app) em `LARECOMP_SAVE_SEED` - e comparar a máscara e os passes de luz.
 
 ## O que trabalhar - o vídeo do usuário (2026-10-29)
+
+Atualização de 2026-10-30:
+- **Nuvens em blocos: corrigido** (`c193510`, TMML sem sinal).
+- **Paredes só névoa:** no Switch é igual (acima).
+- **Água escura:** continua. No Switch, o lago da ilha e as poças da caverna são verde-azulados; aqui saem quase
+  pretos.
+
 
 Gravação do usuário, 164 s (`Screenrecorder-2026-10-29-09-13-39-739.mp4`, cópia em `android/out/uservid/`, um
 quadro por segundo em `f*.jpg` e folhas em `sheet*.jpg`): o despertar, a caverna até a saída, o salto das ilhas, o
