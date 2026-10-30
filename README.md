@@ -65,6 +65,11 @@ android/run_boot.sh 120                                      # start the game, l
   Macs and iPhones: its verified 1.4.3 patch sites (the fixed resolution, the real-time frame step, the cloth and hair
   clock, the render size) and its findings (NVN's early-Z flag and block height rounding, depth reads and the D16
   shadow compare, the visibility counter).
+- [valentderah/totk-pc-recomp](https://github.com/valentderah/totk-pc-recomp) (MIT), a Windows/Vulkan static
+  recompilation of Tears of the Kingdom 1.4.3: its attachment-less render pass sizing and scissor handling (interior
+  ambient light on cave rocks), 16-bit packed NVN format component ordering (`RGBA4`/`RGB5`/`RGB5A1`/`RGB565` and
+  `BGR565`/`BGR5`/`BGR5A1`/`A1BGR5`/`BGRX8`/`BGRA8` for terrain normal and blend maps), `MapPhysicalMemory` preservation
+  of already-mapped pages, and its documented 1.4.3 findings.
 - [LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid), its Android port, and
   [BOTWRecompAndroid](https://github.com/mamcjr/BOTWRecompAndroid) (its README in [docs/botw/](docs/botw/)): the app,
   the phone-side game code build, touch controls, mods, driver compatibility, the Portuguese menus, the Sheikah look and

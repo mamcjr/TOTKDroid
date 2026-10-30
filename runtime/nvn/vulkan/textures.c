@@ -14,7 +14,7 @@
 #include "../texpatch.h"
 
 // ================================================================== formats
-typedef struct { VkFormat vf; uint8_t expand_rgb, alpha_one; } VkFmt;
+typedef struct { VkFormat vf; uint8_t expand_rgb, alpha_one, chan[4]; } VkFmt;
 
 // DEPTH24_STENCIL8 as itself where the GPU has it for everything the game does with depth (NVIDIA, Intel): half the
 // bytes of D32_SFLOAT_S8_UINT (4 instead of 8 per pixel) for every depth test, clear and copy - the game copies its
@@ -82,10 +82,12 @@ static VkFmt fmt_of(uint32_t f) {
     case 0x36: return (VkFmt){VK_FORMAT_D32_SFLOAT_S8_UINT};
     case 0x37: return (VkFmt){VK_FORMAT_R8G8B8A8_SRGB, 0, 1};
     case 0x38: return (VkFmt){VK_FORMAT_R8G8B8A8_SRGB};
-    case 0x39: return (VkFmt){VK_FORMAT_R4G4B4A4_UNORM_PACK16};   // Metal ABGR4Unorm
-    case 0x3A: return (VkFmt){VK_FORMAT_R5G6B5_UNORM_PACK16};     // Metal B5G6R5Unorm
-    case 0x3B: return (VkFmt){VK_FORMAT_R5G5B5A1_UNORM_PACK16};   // Metal A1BGR5Unorm
-    case 0x3C: return (VkFmt){VK_FORMAT_R5G6B5_UNORM_PACK16};
+    // 16-bit packed formats: NVN names components from LSB to MSB; Vulkan PACK16 names them from MSB to LSB
+    // (credit: valentderah/totk-pc-recomp commit c4108c4 - TotK uses RGB5A1 and RGB565 for terrain normal/blend maps).
+    case 0x39: return (VkFmt){VK_FORMAT_B4G4R4A4_UNORM_PACK16, 0, 0, {5, 2, 3, 4}};  // RGBA4 (R in low 4 bits)
+    case 0x3A: return (VkFmt){VK_FORMAT_A1R5G5B5_UNORM_PACK16, 0, 1, {4, 3, 2, 5}};  // RGB5 (R in low 5 bits, A=1)
+    case 0x3B: return (VkFmt){VK_FORMAT_A1R5G5B5_UNORM_PACK16, 0, 0, {4, 3, 2, 5}};  // RGB5A1 (R in low 5, A in bit 15)
+    case 0x3C: return (VkFmt){VK_FORMAT_R5G6B5_UNORM_PACK16, 0, 0, {4, 3, 2, 5}};    // RGB565 (R in low 5, B in high 5)
     case 0x3D: return (VkFmt){VK_FORMAT_A2B10G10R10_UNORM_PACK32};
     case 0x3E: return (VkFmt){VK_FORMAT_A2B10G10R10_UINT_PACK32};
     case 0x3F: return (VkFmt){VK_FORMAT_B10G11R11_UFLOAT_PACK32};
@@ -136,11 +138,14 @@ static VkFmt fmt_of(uint32_t f) {
     case 0x92: return (VkFmt){VK_FORMAT_ASTC_10x10_SRGB_BLOCK};
     case 0x93: return (VkFmt){VK_FORMAT_ASTC_12x10_SRGB_BLOCK};
     case 0x94: return (VkFmt){VK_FORMAT_ASTC_12x12_SRGB_BLOCK};
-    case 0x95: case 0x96: case 0x97: return (VkFmt){VK_FORMAT_R5G5B5A1_UNORM_PACK16};
-    case 0x98: return (VkFmt){VK_FORMAT_B8G8R8A8_UNORM, 0, 1};
-    case 0x99: return (VkFmt){VK_FORMAT_B8G8R8A8_UNORM};
-    case 0x9A: return (VkFmt){VK_FORMAT_B8G8R8A8_SRGB, 0, 1};
-    case 0x9B: return (VkFmt){VK_FORMAT_B8G8R8A8_SRGB};
+    case 0x95: return (VkFmt){VK_FORMAT_R5G6B5_UNORM_PACK16};                        // BGR565 (B in low 5, R in high 5)
+    case 0x96: return (VkFmt){VK_FORMAT_A1R5G5B5_UNORM_PACK16, 0, 1};                // BGR5 (B in low 5, R in bits 10..14)
+    case 0x97: return (VkFmt){VK_FORMAT_A1R5G5B5_UNORM_PACK16};                      // BGR5A1 (B in low 5, A in bit 15)
+    case 0x98: return (VkFmt){VK_FORMAT_R5G5B5A1_UNORM_PACK16};                      // A1BGR5 (A in bit 0, R in high 5)
+    case 0x99: return (VkFmt){VK_FORMAT_B8G8R8A8_UNORM, 0, 1};                       // BGRX8
+    case 0x9A: return (VkFmt){VK_FORMAT_B8G8R8A8_UNORM};                             // BGRA8
+    case 0x9B: return (VkFmt){VK_FORMAT_B8G8R8A8_SRGB, 0, 1};                        // BGRX8_SRGB
+    case 0x9C: return (VkFmt){VK_FORMAT_B8G8R8A8_SRGB};                              // BGRA8_SRGB
     default: return (VkFmt){VK_FORMAT_R8G8B8A8_UNORM};
     }
 }
@@ -921,11 +926,12 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     uint32_t layers = t->layout.layers ? t->layout.layers : 1;
     if (layers > b->layers && b->depth == 1) layers = b->layers;
     uint64_t layer_size = tegra_layer_size(&t->layout);
-    // Linear textures: flag 0x10, rows t->stride apart; flag 0x40 (BOTW's terrain height tiles, 256x256 R16 filled by the
-    // CPU) too, rows packed at their width - their stride field doesn't fit their storage. Read as block-linear, those
-    // tiles gave the terrain's heights in stripes: walls stretched into vertical "curtains", spikes in the shrine.
+    // Linear render targets use the row alignment reported by device property 57, just as CPU writeback does.
+    // Their builder stride is not authoritative. TotK's 260-wide R16 height maps have 520 useful bytes per row
+    // but a 640-byte pitch; treating them as packed rows feeds unrelated heights to the displacement shader.
+    extern uint64_t nvn_linear_rt_pitch(uint64_t row_bytes);
     bool linear = (t->flags & 0x50) != 0;
-#define LIN_STRIDE(row_bytes) ((t->flags & 0x10) ? t->stride : (uint64_t)(row_bytes))
+#define LIN_STRIDE(row_bytes) ((t->flags & 0x10) ? t->stride : nvn_linear_rt_pitch(row_bytes))
     uint32_t levels = t->layout.levels < b->levels ? t->layout.levels : b->levels;
     for (uint32_t layer = 0; layer < layers; layer++) {
         for (uint32_t lv = 0; lv < levels; lv++) {
@@ -1241,18 +1247,19 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
     }
     VkComponentMapping sw = IDENTITY;
     if (!(b->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) && b->samples == 1) {
+        VkFmt mf = fmt_of(v && (v->setmask & 4) ? v->format : t->format);
         const uint8_t *s = v && (v->setmask & 8) ? v->swizzle : t->swizzle;
         uint8_t c[4];
         for (int i = 0; i < 4; i++) c[i] = s[i] <= 5 ? s[i] : (uint8_t)(2 + i);
-        if (c[0] || c[1] || c[2] || c[3]) {  // never set: identity
-            if (fmt_of(t->format).alpha_one)
-                for (int i = 0; i < 4; i++) if (c[i] == 5) c[i] = 1;
+        if (!(c[0] || c[1] || c[2] || c[3])) { c[0] = 2; c[1] = 3; c[2] = 4; c[3] = 5; }
+        for (int i = 0; i < 4; i++) {
+            if (mf.alpha_one && c[i] == 5) c[i] = 1;
+            else if (mf.chan[0] && c[i] >= 2 && c[i] <= 5) c[i] = mf.chan[c[i] - 2];
+        }
+        if (c[0] != 2 || c[1] != 3 || c[2] != 4 || c[3] != 5)
             // NVN swizzle 0 zero, 1 one, 2..5 r,g,b,a == VkComponentSwizzle - 1
             sw = (VkComponentMapping){(VkComponentSwizzle)(c[0] + 1), (VkComponentSwizzle)(c[1] + 1), (VkComponentSwizzle)(c[2] + 1),
                                       (VkComponentSwizzle)(c[3] + 1)};
-        } else if (fmt_of(t->format).alpha_one) {
-            sw.a = VK_COMPONENT_SWIZZLE_ONE;
-        }
     }
     VkImageViewType want = view_type_for(want_textype);
     VkImageViewType have = b->base_type;

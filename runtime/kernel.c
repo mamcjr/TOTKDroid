@@ -116,6 +116,16 @@ typedef struct { uint64_t addr, size; uint32_t type, perm; } Region;
 static Region *regions;
 static int nregions, regions_cap;
 static pthread_mutex_t g_rlock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_alias_map_lock = PTHREAD_MUTEX_INITIALIZER;
+bool kernel_range_unmapped(uint64_t addr, uint64_t size) {
+    if (!size || addr > UINT64_MAX - size) return false;
+    bool free_range = true;
+    pthread_mutex_lock(&g_rlock);
+    for (int i = 0; i < nregions; i++)
+        if (addr < regions[i].addr + regions[i].size && regions[i].addr < addr + size) { free_range = false; break; }
+    pthread_mutex_unlock(&g_rlock);
+    return free_range;
+}
 #define PHYSICAL 0x7  // MapPhysicalMemory's regions' type: merged with their neighbours, unmapped by range
 static uint64_t heap_size;
 #ifdef __ANDROID__
@@ -1009,8 +1019,10 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
             x[0] = R_INVALID_ADDRESS;
             break;
         }
+        pthread_mutex_lock(&g_alias_map_lock);
         memcpy((void *)x[0], (void *)x[1], x[2]);
         region_add(x[0], x[2], 0xB, 3);
+        pthread_mutex_unlock(&g_alias_map_lock);
         x[0] = R_OK;
         break;
     case 0x05:  // UnmapMemory(dst, src, size): copy back
@@ -1128,9 +1140,11 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         KObject *o = handle_get((uint32_t)x[0]);
         if (!o || o->type != KOBJ_SHMEM) { x[0] = R_INVALID_HANDLE; break; }
         KSharedMem *s = (KSharedMem *)o;
+        pthread_mutex_lock(&g_alias_map_lock);
         memset((void *)x[1], 0, x[2]);
         s->guest_addr = x[1];  // HLE services write straight into the guest's mapping
         region_add(x[1], x[2], 6, 3);
+        pthread_mutex_unlock(&g_alias_map_lock);
         if (s->on_map) s->on_map(s);
         x[0] = R_OK;
         break;
@@ -1264,14 +1278,22 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         x[1] = v;
         break;
     }
-    case 0x2C:  // MapPhysicalMemory(addr, size): zero pages, backed when first touched
-        plat_discard(x[0], x[1]);
+    case 0x2C:  // MapPhysicalMemory(addr, size): Horizon maps only the unmapped pages and preserves already-mapped pages
+                // (credit: valentderah/totk-pc-recomp runtime/memory.c - TotK's heaps grow by re-mapping ranges they partly
+                // own; UnmapPhysicalMemory already discards unmapped pages).
+        pthread_mutex_lock(&g_alias_map_lock);
+#ifdef __ANDROID__
+        { extern void vk_vamm_before_map(uint64_t addr, uint64_t size); vk_vamm_before_map(x[0], x[1]); }
+#endif
         region_add(x[0], x[1], PHYSICAL, 3);
+        pthread_mutex_unlock(&g_alias_map_lock);
         x[0] = R_OK;
         break;
     case 0x2D:  // UnmapPhysicalMemory(addr, size): any range of what was mapped, its memory given back
+        pthread_mutex_lock(&g_alias_map_lock);
         region_remove_physical(x[0], x[1]);
         plat_discard(x[0], x[1]);
+        pthread_mutex_unlock(&g_alias_map_lock);
         x[0] = R_OK;
         break;
     case 0x34: x[0] = svc_wait_for_address(x[0], (uint32_t)x[1], (int32_t)x[2], (int64_t)x[3]); break;

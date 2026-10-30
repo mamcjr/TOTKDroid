@@ -66,6 +66,11 @@ android/run_boot.sh 120                                      # inicia o jogo, lo
   Macs e iPhones: os sítios de patch da 1.4.3 verificados por ele (a resolução fixa, o passo de quadro em tempo real, o
   relógio de pano e cabelo, o tamanho de renderização) e o que ele descobriu (o flag de early-Z e o arredondamento da
   altura de bloco do NVN, as leituras de profundidade e a comparação de sombra D16, o contador de visibilidade).
+- [valentderah/totk-pc-recomp](https://github.com/valentderah/totk-pc-recomp) (MIT), uma recompilação estática do Tears
+  of the Kingdom 1.4.3 para Windows/Vulkan: o dimensionamento e o scissor de render passes sem anexos (luz ambiente do
+  interior nas rochas da caverna), a ordem de canais dos formatos NVN empacotados de 16 bits (`RGBA4`/`RGB5`/`RGB5A1`/`RGB565`
+  e `BGR565`/`BGR5`/`BGR5A1`/`A1BGR5`/`BGRX8`/`BGRA8` nos mapas de normais e mistura do terreno), a preservação de
+  páginas já mapeadas em `MapPhysicalMemory` e os achados documentados da 1.4.3.
 - [LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid), o seu porte para Android, e
   [BOTWRecompAndroid](https://github.com/mamcjr/BOTWRecompAndroid) (o README dele em [docs/botw/](docs/botw/)): o app,
   a compilação do código do jogo no celular, os controles de toque, os mods, a compatibilidade de drivers, os menus em

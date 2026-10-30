@@ -221,6 +221,8 @@ void plat_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 // window would split it into more of the process's limited mappings; the window is private and anonymous, so the
 // dropped pages read as zero. A range's partial pages at its ends are cleared by hand.)
 void plat_discard(uint64_t addr, uint64_t size) {
+    extern bool vk_vamm_clear(uint64_t addr, uint64_t size);
+    if (vk_vamm_clear(addr, size)) return;
     uint64_t pg = (uint64_t)sysconf(_SC_PAGESIZE), lo = (addr + pg - 1) & ~(pg - 1), hi = (addr + size) & ~(pg - 1);
     if (lo >= hi) {
         memset((void *)(uintptr_t)addr, 0, size);

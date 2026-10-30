@@ -1,5 +1,6 @@
 // Executes recorded NVN command lists with Vulkan (port of renderer.m; same structure, same behaviour).
 #include <SDL3/SDL_cpuinfo.h>
+#include "writeback_policy.h"
 #include <SDL3/SDL_timer.h>
 #include <float.h>
 #include <math.h>
@@ -1444,7 +1445,23 @@ static uint32_t tex_wh[2][64][2];
 // ================================================================== render passes
 static VkFormat pass_color[8], pass_depth, pass_stencil;
 static uint32_t pass_ncolor, pass_samples = 1, pass_w, pass_h;
+static bool pass_noatt;
 static int debug_pass_no;
+
+// Attachment-less render pass sizing (ported from valentderah/totk-pc-recomp commit 7ceda94):
+// TotK draws a fragment shader that only writes a storage buffer into an offset 1x1 viewport; sizing the pass by
+// the viewport's far corner (x + w, y + h) keeps the offset viewport inside the render area and scissor so cave
+// rocks retain their interior ambient light.
+static void noatt_dims(uint32_t *w, uint32_t *h) {
+    int vw = (int)ceilf(st.viewport[0][0] + st.viewport[0][2]);
+    int vh = (int)ceilf(st.viewport[0][1] + st.viewport[0][3]);
+    int sw = st.scissor[0][0] + st.scissor[0][2];
+    int sh = st.scissor[0][1] + st.scissor[0][3];
+    int pw = vw > 0 ? vw : sw > 0 ? sw : 16;
+    int ph = vh > 0 ? vh : sh > 0 ? sh : 16;
+    *w = pw < 16 ? 16u : pw > 16384 ? 16384u : (uint32_t)pw;
+    *h = ph < 16 ? 16u : ph > 16384 ? 16384u : (uint32_t)ph;
+}
 
 // Redundant-state filter: what draw() last set in the current command buffer, so unchanged pipeline binds, dynamic
 // state and vertex / index buffer binds are not recorded again (a draw used to issue ~20 vkCmd* calls; most repeat the
@@ -1529,10 +1546,21 @@ static uint64_t stat_wb, stat_wb_dropped;
 // these right after that wait (the terrain heights the feet stand on, the water's colour), so they must have landed
 static _Atomic uint64_t g_wb_seq;
 uint64_t vk_last_writeback_seq(void) { return atomic_load(&g_wb_seq); }
+static _Atomic uint64_t g_wb_small_seq;
+uint64_t vk_last_small_writeback_seq(void) { return atomic_load(&g_wb_small_seq); }
 
 static bool wb_on(void) {
     static int on = -1;
     if (on < 0) on = getenv("LARECOMP_NO_WRITEBACK") == NULL;
+    return on;
+}
+
+static bool wb_cpu_small_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("LARECOMP_WB_CPU_SMALL");
+        on = !e || atoi(e) != 0;
+    }
     return on;
 }
 
@@ -1546,7 +1574,8 @@ static bool wb_eligible(NvnTexture *t, TexBackend *b, uint32_t lv) {
     if (only >= 0 && t->format != (uint32_t)only && tegra_total_size(&t->layout) > 4096) return false;
     static int lin = -1;  // (linear targets too, up to a slot; LARECOMP_WB_LINEAR=0: not)
     if (lin < 0) lin = !getenv("LARECOMP_WB_LINEAR") || atoi(getenv("LARECOMP_WB_LINEAR"));
-    return t->addr >= HEAP_BASE && tegra_total_size(&t->layout) <= ((lin && (t->flags & 0x50)) ? WB_SLOT : WB_MAX);
+    return t->addr >= HEAP_BASE && wb_size_allowed(tegra_total_size(&t->layout), wb_cpu_small_on() && t->pool ? t->pool->flags : 0,
+                                                  lin && (t->flags & 0x50), WB_MAX, WB_SLOT);
 }
 
 static void wb_queue(NvnTexture *t) {
@@ -1605,6 +1634,8 @@ static void wb_queue(NvnTexture *t) {
                    .bh = l.block_height_log2, .fmt = t->format, .off = off, .size = small ? WB_MAX : WB_SLOT,
                    .order = ++wb_order, .busy = true};
     atomic_store(&g_wb_seq, e->seq);
+    if (wb_cpu_small_on() && t->pool && (t->pool->flags & 0x6u) && tegra_total_size(&t->layout) <= WB_CPU_SMALL_MAX)
+        atomic_store(&g_wb_small_seq, e->seq);
     pthread_mutex_unlock(&wb_lock);
     {   // LARECOMP_LOG_WB_FRAME=<n>: every write-back of every n-th frame - size, format, flags, submission (the frame's
         // submissions: nvnSyncWait's [synclag-frame] line), to tell which ones the CPU needs before the next frame
@@ -2004,7 +2035,8 @@ static void begin_pass(void) {
             if (!pass_ncolor) pass_samples = b->samples;
         }
     }
-    if (!w) { pass_sx = pass_sy = 1; minw = minh = 16; }
+    pass_noatt = !w;
+    if (!w) { pass_sx = pass_sy = 1; noatt_dims(&minw, &minh); }
     pass_w = minw; pass_h = minh;
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {minw, minh}}, .layerCount = 1,
                           .colorAttachmentCount = pass_ncolor, .pColorAttachments = ca,
@@ -2054,7 +2086,7 @@ static bool g_off_layout;  // (this draw is a menu layout's pane placed past the
 static VkRect2D scissor_rect(void) {
     int w, h;
     pass_size(&w, &h);
-    if (!w) return (VkRect2D){{0, 0}, {pass_w, pass_h}};
+    if (!w) { w = (int)pass_w; h = (int)pass_h; }
     int x = st.scissor[0][0], y = st.scissor[0][1], sw = st.scissor[0][2], sh = st.scissor[0][3];
     float sx = vp_sx, sy = vp_sy, ox = vp_ox, oy = vp_oy;
     {   // Widescreen (1.8.2): the HUD's camera widens with the scene's (widescreen.c rt_persp_update), which puts the 16:9
@@ -2235,6 +2267,11 @@ static VkPipeline clear_pipeline(int index, int kind, uint32_t mask, bool depth,
 
 static void clear(int index, int kind, const void *color, uint32_t mask, bool depth, float dval, bool stencil, uint32_t sval,
                   uint32_t smask) {
+    if (in_pass && pass_noatt) {
+        uint32_t nw, nh;
+        noatt_dims(&nw, &nh);
+        if (nw > pass_w || nh > pass_h) st.rt_dirty = true;
+    }
     begin_pass();
     VkCommandBuffer cb = vk_cmd();
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
@@ -3638,7 +3675,22 @@ static bool up_patch_frag(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *
 static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32_t gx, uint32_t gy, uint32_t gz) {
     static const uint8_t zeros[0x10000];
     if (k == 0) {
-        uint32_t drv[0x800 / 4] = {0};
+        uint32_t drv[0x800 / 4];
+        uint64_t size = si->cbuf_size[0] > sizeof drv ? sizeof drv : (si->cbuf_size[0] ? si->cbuf_size[0] : 256);
+        if (size < 0x500 && stage == 5) size = 0x500;
+        static int enabled = -1;
+        if (enabled < 0) {
+            const char *e = getenv("LARECOMP_VK_DRIVER_CONSTANTS");
+            enabled = !e || atoi(e) != 0;
+        }
+        int ab = AB("drvconst");
+        bool compact = ab >= 0 ? ab == 1 : enabled;
+        // Only bytes visible to this shader need initialization. Graphics shaders
+        // whose cb0 ends before the storage-buffer table see an all-zero block.
+        uint32_t base = 0x110 + 0x100 * (stage == 1 ? 4 : 0);
+        if (compact && stage != 5 && size <= base)
+            return ubo_span(copy_dedupe(stage == 1 ? DEDUPE_DRV_F : DEDUPE_DRV_V, zeros, size, 256), size);
+        memset(drv, 0, compact ? size : sizeof drv);
         if (stage == 5) {
             drv[0x200 / 4] = gx; drv[0x204 / 4] = gy; drv[0x208 / 4] = gz;
             for (int i = 0; i < 16; i++) {
@@ -3648,16 +3700,13 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                 e[0] = (uint32_t)st.sbuf[5][i].addr; e[1] = (uint32_t)(st.sbuf[5][i].addr >> 32); e[2] = (uint32_t)st.sbuf[5][i].size;
             }
         } else {
-            uint32_t base = 0x110 + 0x100 * (stage == 1 ? 4 : 0);
-            for (int i = 0; i < 16; i++) {
+            for (int i = 0; i < 16 && (!compact || base + 16u * i < size); i++) {
                 uint32_t *e = &drv[(base + 16 * i) / 4];
                 e[0] = (uint32_t)st.sbuf[stage][i].addr;
                 e[1] = (uint32_t)(st.sbuf[stage][i].addr >> 32);
                 e[2] = (uint32_t)st.sbuf[stage][i].size;
             }
         }
-        uint64_t size = si->cbuf_size[0] > sizeof drv ? sizeof drv : (si->cbuf_size[0] ? si->cbuf_size[0] : 256);
-        if (size < 0x500 && stage == 5) size = 0x500;
         return ubo_span(copy_dedupe(stage == 5 ? DEDUPE_DRV_C : stage == 1 ? DEDUPE_DRV_F : DEDUPE_DRV_V, drv, size, 256), size);
     }
     if (k == 1) {  // compiler constants stored after the shader code
@@ -5017,6 +5066,9 @@ void vc_flush(void) {
 static bool guest_direct(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
     static int copy = -1;
     if (copy < 0) copy = getenv("LARECOMP_VK_COPY_VERTICES") != NULL;
+#ifdef __ANDROID__
+    if (!copy && vk_vamm_buffer(addr, size, buf, off)) return true;
+#endif
     if (copy || addr < HEAP_BASE) return false;
 #ifdef __ANDROID__
     if (gcopy_mode && !gmem_buf) return addr + size <= HEAP_BASE + HEAP_MAX && vcache_lookup(addr, size, buf, off);  // (else copied)
@@ -5035,6 +5087,9 @@ static int g_cs_n;  // (compute program table below)
 // address (the old Prog / Pipe objects are leaked, so pipeline keys holding their pointers can't collide), compute
 // programs, shared copies - and the heap import: its pages are replaced (re-imported on first use).
 void vk_exec_reset(void) {
+#ifdef __ANDROID__
+    vk_vamm_reset();
+#endif
     memset(prog_tab, 0, sizeof prog_tab);
     memset(pipe_tab, 0, sizeof pipe_tab);
     g_cs_n = 0;
@@ -5971,6 +6026,11 @@ static void draw_(CmdRec *r, bool indexed) {
             else snapshots_invalidate(st.rt.color[i]);
         }
     }
+    if (in_pass && pass_noatt) {
+        uint32_t nw, nh;
+        noatt_dims(&nw, &nh);
+        if (nw > pass_w || nh > pass_h) st.rt_dirty = true;
+    }
     begin_pass();
     VkCommandBuffer cb = vk_cmd();
 
@@ -6463,7 +6523,16 @@ static void draw_(CmdRec *r, bool indexed) {
             else need = (uint64_t)max_index * stride + 256;
             if (v.size && need > v.size) need = v.size;
             if (!v.addr) { static const uint8_t zero[256]; sp = vk_transient_copy(zero, 256, 16); }
-            else sp = guest_copy(v.addr, need ? need : 16);
+            else {
+#ifdef __ANDROID__
+                // The bound stream may cover an entire pool and cross placed
+                // chunks. The range actually reached by this draw can still fit.
+                if (vk_vamm_buffer(v.addr, need ? need : 16, &dbuf, &doff))
+                    sp = (VkSpan){dbuf, doff, NULL};
+                else
+#endif
+                    sp = guest_copy(v.addr, need ? need : 16);
+            }
         }
         VkDeviceSize off = sp.off;
         if (ss_on && (ss.vb_known >> s & 1) && ss.vb[s] == sp.buf && ss.vo[s] == off) continue;

@@ -8,6 +8,7 @@
 #include "../settings.h"
 #include "../framepace.h"
 #include "nvn.h"
+#include "vulkan/writeback_policy.h"
 
 void renderer_sync(void);
 
@@ -376,6 +377,14 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
                 (unsigned long long)st_n, (unsigned long long)(st_n ? st_pos / st_n : 0));
             wb_n = wb_pos = st_n = st_pos = 0;
         }
+        // TotK reads small CPU-visible targets without an explicit invalidate.
+        // Their current results must land even when frame sync lag is enabled.
+        extern uint64_t vk_last_small_writeback_seq(void);
+        target = wb_small_wait_target(target, vk_last_small_writeback_seq(), seq);
+        // A copied vertex stream is a snapshot; a placed alias stream is read
+        // directly. Complete those reads before sync lag lets the CPU rewrite it.
+        extern uint64_t vk_vamm_last_read_seq(void);
+        target = wb_small_wait_target(target, vk_vamm_last_read_seq(), seq);
         renderer_wait_seq(target);
     } else
 #endif

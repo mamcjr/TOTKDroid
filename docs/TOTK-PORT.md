@@ -672,6 +672,55 @@ Falta:
 
 - `totkgame.so` com o NDK (`android/build_gamelib.sh Dump/0100F2C0115B6000/exefs`); `romfs.bin` feito direto da pasta
   escolhida; a compilação no celular (`runtime/gamebuild.c`) com 228 mil funções.
+- **`romfs.bin` pronto na pasta de dados (2026-10-29, trazido do BOTWRecompAndroid `47270e8` / `66ca80e`):** se a pasta
+  escolhida pelo usuário tiver `exefs/` e um `romfs.bin` já pronto ao lado (em vez dos 304 mil arquivos soltos de
+  `romfs/`), o app valida o cabeçalho, as tabelas, a contagem mínima de arquivos e o `System/Version.txt` (`1.4.3`)
+  direto pelo descritor (`romfs_check_image`), permite tanto copiar (`romfs.bin` em `extracted/`) quanto usar no lugar
+  (`romfs.link` apontando para o arquivo `romfs.bin` original, aberto direto em `services/fs.c`), e extrai apenas os
+  vídeos soltos (`Movie/*.mp4` / `.webm`) da imagem para `extracted/romfs/` (`romfs_image_extract`).
+
+### Trazido e catalogado de `valentderah/totk-pc-recomp` (2026-10-29)
+
+Análise do repositório [valentderah/totk-pc-recomp](https://github.com/valentderah/totk-pc-recomp) (porte Windows/Vulkan
+do TOTK 1.4.3 derivado da mesma árvore LAS Recomp + MacNativeGames):
+
+- **Aplicado no runtime (sem alterar `GAMELIB_ID`):**
+  1. **Passes sem anexos (attachment-less render passes) — `runtime/nvn/vulkan/exec.c` (crédito: `totk-pc-recomp`
+     `7ceda94`):** o TOTK desenha um fragment shader que só escreve num storage buffer usando um viewport 1x1 com
+     deslocamento (`x, y`). Aqui `begin_pass()` fixava `16x16` quando não havia alvos de cor/profundidade, `scissor_rect()`
+     ignorava `st.scissor[0]` e `draw_()` não reabria o passe quando o canto (`x + w`, `y + h`) do viewport passava de
+     `pass_w x pass_h` — deixando o viewport deslocado fora da área do passe e fazendo a pedra da caverna perder a luz
+     ambiente do interior (candidato direto para "As paredes só névoa").
+  2. **Formatos NVN empacotados de 16 bits (`0x39`..`0x3C`) e correção do off-by-one em `0x95`..`0x9C` —
+     `runtime/nvn/formats.c` e `runtime/nvn/vulkan/textures.c` (crédito: `totk-pc-recomp` `c4108c4`):** o NVN enumera
+     componentes empacotados de 16 bits do LSB para o MSB (`RGBA4` = `0x39`, `RGB5` = `0x3A`, `RGB5A1` = `0x3B`,
+     `RGB565` = `0x3C`), ao contrário dos formatos `PACK16` do Vulkan (MSB para LSB). O TOTK usa `RGB5A1` e `RGB565`
+     nos mapas de normais e mistura do terreno (R e B trocados esticavam as texturas do chão num eixo). Além disso,
+     `0x95`..`0x98` são todos de 2 bytes (`BGR565`, `BGR5`, `BGR5A1`, `A1BGR5`) e `0x99`..`0x9C` são de 4 bytes
+     (`BGRX8`, `BGRA8`, `BGRX8_SRGB`, `BGRA8_SRGB`); `formats.c` e `textures.c` tinham `0x98`..`0x9B` deslocados em 1.
+  3. **`SVC 0x2C` (`MapPhysicalMemory`) preservando páginas já mapeadas — `runtime/kernel.c` (crédito: `totk-pc-recomp`
+     `runtime/memory.c`):** o kernel Horizon mapeia apenas as páginas ainda não mapeadas do intervalo e preserva o
+     conteúdo das que já estavam mapeadas; os heaps do TOTK crescem remapeando faixas que já possuem em parte. Antes, o
+     `case 0x2C` chamava `plat_discard(x[0], x[1])` na faixa inteira (zerando páginas já mapeadas), sendo que o
+     `SVC 0x2D` (`UnmapPhysicalMemory`) já descarta as páginas ao desmapear.
+- **Catalogado para próximas rodadas (quando `totkgame.so` for regerado ou no backend Vulkan):**
+  - **Patch de quique da física a 60 fps (`totk-pc-recomp` `tools/totk_patches.py` / `59eb6be`):** em `0x7000562a64`
+    (`ldr s0, [x9, #0x28]`, palavra `0xbd402920`), clampar o dt do solver de contato a `<= 1/60 s` quando o passo real
+    passa de `1/60 s`, evitando que corpos rígidos quiquem ao pousar em quadros mais longos no modo 60 fps.
+  - **Zstd nativo nos call-sites seguros (`totk-pc-recomp` `1f4c6fc`):** substituir apenas os 4 call-sites de
+    `ZSTD_decompressStream` (`0x02be2a34`, `0x02dc33dc`) e `ZSTD_decompressDCtx` (`0x028eb388`, `0x02dc3444`) que usam o
+    `ZSTD_DCtx` padrão pela `libzstd` nativa, mantendo o `0x02c896d8` (dicionário pré-digerido customizado da Nintendo
+    para `zs.dic`) no código recompilado.
+  - **Barreiras de compilador e `rt_spin_gate` em laços de spin (`totk-pc-recomp` `c294397`):** `atomic_signal_fence`
+    em back-edges de mesmo bloco no gerador (evita que `clang -O1` promova leituras de memória compartilhada para fora do
+    spin-loop) e `rt_spin_gate` nos 6 pontos de spin-wait do agendador de tarefas do TOTK (`0x02c279cc`, `0x02c27bb8`,
+    `0x02b361dc`, `0x02dcde8c`, `0x02bd64a4`, `0x025db384`).
+  - **Write-back de alvos pequenos (`<= 64 KB`) ao passar a cerca (`totk-pc-recomp` `runtime/vk_texture.c`):** o sistema
+    de grama do TOTK renderiza um mapa RGBA8 128x128 (64 KB) num pool CPU-cached a cada quadro e lê os bytes na CPU sem
+    chamar `nvnMemoryPoolInvalidateMappedRange` (reações de corte de grama e insetos).
+  - **Otimizações de replay Vulkan (`totk-pc-recomp` `runtime/vk_exec_draw.c`, `166e5a7`):** máscara de canais usados
+    por shader para só checar/vincular os slots lidos (`RsList`), `VK_KHR_descriptor_update_template` e evicção
+    incremental de texturas fora do passe crítico.
 
 ### Fase 7: desempenho
 
