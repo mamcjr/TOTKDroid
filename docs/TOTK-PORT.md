@@ -452,8 +452,14 @@ Atualização de 2026-10-30:
       manchada, então não serve de correção.
     - D16 em D32F: nada muda.
     - `LARECOMP_FEEDBACK_COPY=1`: nada muda.
-  - **Próximo passo:** comparar a classe da água com a dos passes de luz. A classe vem da bandeira (`trunc(R·255)`,
-    a máscara `cb3[1].x`, os bits reordenados). Cada passe usa a sua (`cb11[25].x`, o z do quad).
+  - **A conta da classe:** classificador e passes fazem a mesma conta. O classificador parte da bandeira R
+    (`trunc(R·255)`, a máscara `cb3[1].x`, os nibbles reordenados, `/255`); cada passe parte de `cb11[25].x`.
+    - Testado: o classificador com arredondamento no lugar do `trunc` (`LARECOMP_SHADER_SUBST` com
+      `242900e00_fs.glsl`). Os lagos continuam escuros, então não é a conversão do UNORM8.
+  - **Suspeita seguinte:** o classificador e os dois primeiros passes (`275e821b...`, `71c7ef99...`) desenham por
+    tiles (350 instâncias). O VS lê de `cb0[17]` uma lista que a GPU monta no quadro, e descarta as instâncias além
+    da contagem. Tiles da água fora dessa lista ficam sem classe e sem luz. Próximo passo: ler essa lista e as
+    contagens num quadro com lago, e achar o compute que as escreve.
 
 
 Gravação do usuário, 164 s (`Screenrecorder-2026-10-29-09-13-39-739.mp4`, cópia em `android/out/uservid/`, um
