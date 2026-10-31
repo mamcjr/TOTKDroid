@@ -442,7 +442,18 @@ Atualização de 2026-10-30:
 - **Nuvens em blocos: corrigido** (`c193510`, TMML sem sinal).
 - **Paredes só névoa:** no Switch é igual (acima).
 - **Água escura:** continua. No Switch, o lago da ilha e as poças da caverna são verde-azulados; aqui saem quase
-  pretos.
+  pretos. O que se sabe (mergulho da Grande Ilha Celestial, `android/out/waterpick2*`):
+  - **Como a água é desenhada:** no G-buffer (fs `d31be35c2ce14b2b`, prog `24887b000`, 8 alvos, profundidade escrita),
+    com bandeira de material `0x33` no alvo 0. O próprio draw lê esse alvo 0 (tex6) enquanto o escreve.
+  - **O que falta:** o classificador (`13fe41b7645b246c`) grava a classe como profundidade, mas nenhum dos 11 passes
+    de luz (EQUAL) toca esses pixels. O pixel fica 0 até a composição das nuvens.
+  - **Testes:**
+    - `LARECOMP_VK_EQUAL_TOL=1` (LEQUAL com viés): os lagos ficam azulados. Mas a luz do Link na caverna fica
+      manchada, então não serve de correção.
+    - D16 em D32F: nada muda.
+    - `LARECOMP_FEEDBACK_COPY=1`: nada muda.
+  - **Próximo passo:** comparar a classe da água com a dos passes de luz. A classe vem da bandeira (`trunc(R·255)`,
+    a máscara `cb3[1].x`, os bits reordenados). Cada passe usa a sua (`cb11[25].x`, o z do quad).
 
 
 Gravação do usuário, 164 s (`Screenrecorder-2026-10-29-09-13-39-739.mp4`, cópia em `android/out/uservid/`, um
