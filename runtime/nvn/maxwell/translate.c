@@ -3239,7 +3239,15 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
             int kind = key ? key->rt_kind[rt] : 0;
             sp(&s, "layout(location = %d) out %s c%d;\n", rt, kind == 1 ? "ivec4" : kind == 2 ? "uvec4" : "vec4", rt);
         }
-        if (c->omap_depth) info->writes_depth = true;
+        // a written depth is compared EQUAL against other shaders' positions too - TOTK's light classifier writes a
+        // material id as depth, its lighting passes draw quads at that z: precise, as gl_Position, so the driver keeps
+        // the shader's fma chain. Contracted (Turnip: fma(a,-k,a)+k reassociated), it came out an ulp apart from the
+        // vertex shader's; on D16 every class sits at a .5 rounding step, so an ulp flipped it - the water's class
+        // (0x32) never matched its light pass: the lakes black
+        if (c->omap_depth) {
+            info->writes_depth = true;
+            sp(&s, "precise gl_FragDepth;\n");
+        }
         // (Android's copy mode: the miss log's store, even never run, made the depth test late - every hidden pixel
         // shaded, the lit pass ~2x slower; with no discard, depth write or store of its own the shader's depth test
         // is early anyway - and with a discard too when the draw writes no depth / stencil: the alpha-tested lit
