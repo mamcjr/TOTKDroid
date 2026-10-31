@@ -1822,9 +1822,10 @@ static void dump_layers_raw(TexBackend *b) {  // every layer, level 0, as stored
         vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
     }
     renderer_flush();
+    const char *dir = getenv("LARECOMP_DEBUG_DIR") ? getenv("LARECOMP_DEBUG_DIR") : "build";  // (as the pass dumps: run-as reads there)
     for (uint32_t l = 0; l < nl; l++) {
-        char p[128];
-        snprintf(p, sizeof p, "build/sampled_%ux%u_L%u.raw", b->width, b->height, l);
+        char p[1100];
+        snprintf(p, sizeof p, "%s/sampled_%ux%u_L%u.raw", dir, b->width, b->height, l);
         FILE *f = fopen(p, "wb");
         if (f) { fwrite((const uint8_t *)out.ptr + one * l, 1, one, f); fclose(f); }
     }
@@ -3815,8 +3816,8 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
         if (hit) {
             const float *f = (const float *)(uintptr_t)r.addr;
             uint64_t n = size < 0x400 ? size / 4 : 0x100;
-            LOG("[cbdump] frame %llu fs %016llx stage %d cb%d size %llx:", (unsigned long long)renderer_present_count(),
-                (unsigned long long)g_cur_fs_hash, stage, k, (unsigned long long)size);
+            LOG("[cbdump] frame %llu fs %016llx stage %d cb%d size %llx at %llx:", (unsigned long long)renderer_present_count(),
+                (unsigned long long)g_cur_fs_hash, stage, k, (unsigned long long)size, (unsigned long long)r.addr);
             for (uint64_t i = 0; i < n; i++) LOG(" %g", f[i]);
             LOG("\n");
             static int nfile;  // (and, with LARECOMP_DEBUG_DIR, the whole buffer: <dir>/cb_<fs>_<frame>_s<stage>_cb<k>_<n>.bin)
@@ -7732,6 +7733,13 @@ static void exec_list(uint64_t handle, int depth) {
             if (ct_on() && index < st.rt.ncolor && st.rt.color[index])
                 LOG("[ct] clear-color %p mask %#x sc %d %d %d %d\n", (void *)st.rt.color[index], (uint32_t)r->x[2], st.scissor[0][0], st.scissor[0][1],
                     st.scissor[0][2], st.scissor[0][3]);
+            {   // (diagnosis) LARECOMP_SKIP_CLEAR=<w>x<h>:<hex nvn format>:<hex mask of target indices>: those clears not done
+                static int sw = -1, sh, sf, sm;
+                if (sw < 0) { sw = 0; const char *e = getenv("LARECOMP_SKIP_CLEAR"); if (e) sscanf(e, "%dx%d:%x:%x", &sw, &sh, &sf, &sm); }
+                NvnTexture *ct = index < st.rt.ncolor ? st.rt.color[index] : NULL;
+                if (sw && ct && (int)ct->width == sw && (int)ct->height == sh && (int)ct->format == sf && index < 8 && (sm >> index & 1))
+                    break;
+            }
             if (index < st.rt.ncolor && st.rt.color[index]) alias_before_write(st.rt.color[index], 0, "clear");
             if (index < st.rt.ncolor && st.rt.color[index]) clear(index, (int)r->x[5], x, (uint32_t)r->x[2], false, 0, false, 0, 0);
             break;
