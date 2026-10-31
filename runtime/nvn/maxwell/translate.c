@@ -2068,6 +2068,10 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                 }
             } else {
                 c->uses_gmem_store = true;
+                // (and told to the backend, as the compute path and ATOM / RED do: the draw's storage buffers are then
+                // GPU-written memory for the sync lag and the vertex cache - TOTK's 1x1 attachment-less draw, which
+                // stores the cave's interior ambient coefficients, was a storing draw nobody knew of)
+                c->info->uses_gmem_store = true;
                 if (size < 4)
                     sp(&c->body, "      if (ok) { uint wi = uint(ga >> 2); uint sh = uint(ga & %s) * 8u; atomicAnd(gmem_.w[wi], ~(0x%xu << sh)); "
                        "atomicOr(gmem_.w[wi], (%s & 0x%xu) << sh); }\n", size < 2 ? "3ul" : "2ul", size < 2 ? 0xFFu : 0xFFFFu, R(d),
