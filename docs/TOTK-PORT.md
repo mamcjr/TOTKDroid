@@ -440,8 +440,66 @@ verde-azulada e só o Link tem luz.
 
 Atualização de 2026-10-30:
 - **Nuvens em blocos: corrigido** (`c193510`, TMML sem sinal).
-- **Paredes só névoa:** no Switch é igual (acima).
-- **Água escura:** continua. No Switch, o lago da ilha e as poças da caverna são verde-azulados; aqui saem quase
+- **Paredes sem textura: aberto.** A névoa verde-azulada é a mesma do Switch, mas nas capturas do Switch
+  (`android/out/switch-ref/02.jpg`, `03.jpg`; comparação em `android/out/cave-vs-switch.png`) as paredes mostram os
+  blocos de pedra, o musgo amarelo e a areia; aqui saem lisas, cinza-azuladas. A correção da água não muda isso.
+  - **A cor base está certa:** `LARECOMP_DEBUG_RT=1` (o alvo 1 de cada passe, o sRGB do G-buffer) mostra a pedra
+    e o musgo como no Switch (`android/out/cave-rt1-sheet.png`). A textura se perde na luz.
+  - **A luz:** só o buffer de luz antes da névoa (`android/out/cave-light-only.png`): o Link sai com luz quente e
+    forte, e o terreno ao lado com uma ambiente azul quase preta. Rastreio da parede (`android/out/cavepick.log`,
+    ponto 400,300): o classificador grava a classe 0, e só `71c7ef99` a ilumina, com (0,015; 0,052; 0,047).
+  - **Os dois passes da classe 0** se dividem pelos tiles: `275e821b` desenha onde o registro do tile tem `.w = 1`,
+    `71c7ef99` onde não tem. Quem marca é o fs `24298e300` (hash `7589e5f2c7390f90`): pelo alfa da cor base (bits) e
+    por `t1` = alvo 0 do G-buffer; `.w = 1` quando o bit 4 do alfa está ligado e `t1.g != 0`. Na parede, o G-buffer
+    grava `00000000` no alvo 0: pelos dados do próprio jogo o tile não ganha `.w` (provavelmente "recebe sol"), então
+    `71c7ef99` deve ser o certo também no Switch.
+    - `LARECOMP_FEEDBACK_COPY=1` (esse fs lê o alvo 0 que escreve): nada muda.
+  - **As entradas de `71c7ef99`** (shader de diagnóstico por `LARECOMP_SHADER_SUBST` em `2486b4a00_fs.glsl`,
+    `android/out/cave-ambdbg-dbg/pass_108.png`): cor base (`t4`) certa, `t3`/`t5` com conteúdo, cubemap `t7` com
+    valores, `t8` quase preto e **`t6` preto nas duas camadas**. `t6` é um array 800x448x2 R11G11B10 em
+    `@35dd67e00`.
+    - Quem escreve `t6`: os passes de luz em meia resolução (8 alvos; alvo 2 = camada 0, alvo 3 = camada 1). O alvo 2
+      salvo no fim do passe tem a caverna iluminada (`android/out/cave-rt2-pair.png`).
+    - `LARECOMP_DUMP_SAMPLED=800x448:3f@35dd67e00` (agora grava em `LARECOMP_DEBUG_DIR`): na primeira leitura,
+      as duas camadas estão zeradas.
+    - Copy trace + `LARECOMP_LOG_CLEARS`: o jogo limpa `t6` com zero como alvos 0/1 depois da luz de meia
+      resolução e antes de `05a99cd0` / `275e821b` / `71c7ef99` lerem. O mesmo objeto de textura do jogo é
+      reinicializado ora como esse array, ora como uma 256x256 `0x11` no mesmo endereço.
+    - `LARECOMP_SKIP_CLEAR=800x448:3f:3` (pula esses clears): as paredes continuam escuras.
+    - `LARECOMP_VK_NO_PLACED=1`: as paredes continuam escuras, e o Link também escurece.
+    - Com o clear pulado, `t6` continua zerado na leitura. Os dois grupos de luz de meia resolução escrevem os mesmos
+      alvos, e o jogo limpa `t6` antes do 2º grupo e de novo antes da leitura (os alvos são resolvidos na gravação
+      do comando, `cmdbuf.c`). Pelo jeito, `t6` preto é o esperado também no Switch: pista falsa.
+  - **O draw sem anexo** (`24298c900`, hash `45041f98c918780e`, viewport 1x1, o do totk-pc-recomp `7ceda94`) projeta
+    o cubemap 64x64 e grava coeficientes de ambiente em `cb0[81]` + 320.... Ele roda (passe 16x16), mas não
+    aparecia em `LARECOMP_LOG_STORES`: o tradutor marcava `uses_gmem_store` só no contexto, não no `ShaderInfo`,
+    para STG fora do compute. Corrigido (`translate.c`): agora ele aparece. As paredes continuam escuras.
+  - Os constant buffers de `71c7ef99` (o `[cbdump]` agora mostra o endereço): `cb4` `3b60df300`, `cb9` `3b612c200`,
+    `cb13` `3b612da00`; o draw 1x1 grava no buffer de armazenamento `3b64a3000`, que `71c7ef99` não lê (nem `gmem`
+    nem `cb0`). Na caverna não há `CopyBufferToBuffer` (`LARECOMP_VK_GPU_BUFCOPY=0`: nada muda).
+  - O cubemap `t7` (64x64x6, 5 níveis, `@3b647b000`, alisado no tempo com blend `CONSTANT_ALPHA` 0,2): níveis 0-3
+    coerentes; o nível 4 vermelho com uma faixa preta (`android/out/cave-cube-strip.png`). É de propósito: o jogo
+    o grava de um cubemap 16x16 R16F com swizzle (R, 0, 0, 1), um dado empacotado, não uma cor.
+  - **Luzes locais:** os draws instanciados `9d6bec86951f1e9b` depois dos passes de luz são partículas de poeira
+    (`android/out/cave-locallights.png`); nenhuma luz local é desenhada no quadro. Na 3ª captura do Switch a parede
+    é iluminada por um objeto escuro com luzes (um constructo?) encostado nela, que não existe no nosso G-buffer
+    (`android/out/cave-albedo-vs-switch.png`, com outro enquadramento): a comparação com ela não é justa.
+  - Brilho médio das capturas (vídeo, não exato): Switch (56-61, 77-88, 68-79), aqui (45-47, 61-63, 55-58), uns
+    20% abaixo e com menos contraste.
+  - **No lugar da 2ª captura** (save do usuário, `android/out/spot2-vs-switch.png`): no Switch a cor da pedra
+    (musgo, bordas) atravessa a névoa; aqui tudo sai verde-azulado uniforme.
+  - **Eliminação no `71c7ef99`** (`android/out/abl/`, buffer de luz no chão, 8 bits): original (4,0; 10,2; 8,9);
+    sem `t8` (1,8; 1,6; 1,3); sem o cubemap `t7` (2,1; 8,5; 7,8); sem `t5` igual a sem `t7`. Uns 80% da luz da
+    pedra vêm do `t8`, um termo verde-azulado tipo névoa que segue a distância (alvo 1 dos passes de meia
+    resolução, `android/out/spot2-t8.png`); a luz ambiente do cubemap, a que traz a cor da pedra, é minúscula.
+    `t5` (alvo 0, R e B perto de 1) a multiplica.
+  - O cubemap `t7` vem, com alisamento temporal, de outro cubemap (`@3b5fe6200`, 64x64x6, 4 níveis): uma face
+    por quadro é desenhada como mini-renderização do terreno (fs `246dde500`, hash `478b355ae8e7e8f1`, com o atlas
+    1024x1024 `0x8e` e uma 96x96 `0x6`), depois os mips são filtrados.
+  - **Próximo:** sem referência dos buffers intermediários, cada hipótese é um chute. Uma captura do mesmo quadro
+    num emulador (RenderDoc no Ryujinx / Eden) diria qual está errado: o cubemap (escuro demais?) ou o peso dele.
+  - O usuário lembra do cenário que some nas cutscenes: pode ser a mesma luz faltando.
+- **Água escura: corrigido** (`precise gl_FragDepth`, abaixo). Antes: No Switch, o lago da ilha e as poças da caverna são verde-azulados; aqui saem quase
   pretos. O que se sabe (mergulho da Grande Ilha Celestial, `android/out/waterpick2*`):
   - **Como a água é desenhada:** no G-buffer (fs `d31be35c2ce14b2b`, prog `24887b000`, 8 alvos, profundidade escrita),
     com bandeira de material `0x33` no alvo 0. O próprio draw lê esse alvo 0 (tex6) enquanto o escreve.
@@ -456,10 +514,15 @@ Atualização de 2026-10-30:
     (`trunc(R·255)`, a máscara `cb3[1].x`, os nibbles reordenados, `/255`); cada passe parte de `cb11[25].x`.
     - Testado: o classificador com arredondamento no lugar do `trunc` (`LARECOMP_SHADER_SUBST` com
       `242900e00_fs.glsl`). Os lagos continuam escuros, então não é a conversão do UNORM8.
-  - **Suspeita seguinte:** o classificador e os dois primeiros passes (`275e821b...`, `71c7ef99...`) desenham por
-    tiles (350 instâncias). O VS lê de `cb0[17]` uma lista que a GPU monta no quadro, e descarta as instâncias além
-    da contagem. Tiles da água fora dessa lista ficam sem classe e sem luz. Próximo passo: ler essa lista e as
-    contagens num quadro com lago, e achar o compute que as escreve.
+  - **A causa:** a água tem passe próprio (`2178807956b82cf1`, id 35 = classe 0x32; a máscara do classificador é
+    `0xaf`, e 0x33 & 0xaf = 0x23 vira 0x32). Pintado de magenta por `LARECOMP_SHADER_SUBST`, ele não aparece em lugar
+    nenhum: o EQUAL nunca passa. Em D16, 65535·(0,5 + classe/510) = 32767,5 + 128,5·classe: toda classe par (todas
+    as daqui) cai num degrau de arredondamento ,5, e um ulp de diferença troca o valor. O VS tem `precise
+    gl_Position`; o `gl_FragDepth` do classificador não, então o driver reassocia `fma(a,-k,a)+k` e a profundidade
+    sai um ulp longe da do quad. Cada classe erra para um lado; a da água, para o errado. (Por isso D32F não
+    ajudava: lá o EQUAL pede igualdade exata.)
+  - **A correção:** o tradutor declara `precise gl_FragDepth;` em todo fragment shader que escreve profundidade.
+    Os lagos saem verde-azulados, com reflexo (`android/out/water-fix/051.png`).
 
 
 Gravação do usuário, 164 s (`Screenrecorder-2026-10-29-09-13-39-739.mp4`, cópia em `android/out/uservid/`, um
