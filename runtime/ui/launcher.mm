@@ -939,7 +939,43 @@ typedef void *GpuDevice;
 #endif
 static int g_bg_w, g_bg_h;
 
+// The title: the TOTKDroid logo (assets/artwork/totkdroid-logo-v1.png), the name in text when it's missing.
+#ifdef __APPLE__
+static id<MTLTexture> g_logo;
+#define LOGO_TEXID ((ImTextureID)(__bridge void *)g_logo)
+#else
+static uint64_t g_logo;
+#define LOGO_TEXID ((ImTextureID)g_logo)
+#endif
+static int g_logo_w, g_logo_h;
+static bool g_logo_tried;  // (reset with g_logo when the launcher hands the window to the game: its textures go)
+static void load_logo(GpuDevice dev) {
+    if (g_logo || g_logo_tried) return;
+    g_logo_tried = true;
+    char path[1100];
+    if (!rt_resource("launcher-logo.png", "assets/artwork/totkdroid-logo-v1.png", path, sizeof path)) return;
+    SDL_Surface *src = SDL_LoadPNG(path);
+    SDL_Surface *rgba = src ? SDL_ConvertSurface(src, SDL_PIXELFORMAT_RGBA32) : NULL;
+    if (src) SDL_DestroySurface(src);
+    if (!rgba) return;
+#ifdef __APPLE__
+    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                                              width:rgba->w height:rgba->h mipmapped:NO];
+    g_logo = [dev newTextureWithDescriptor:td];
+    [g_logo replaceRegion:MTLRegionMake2D(0, 0, rgba->w, rgba->h) mipmapLevel:0 withBytes:rgba->pixels bytesPerRow:rgba->pitch];
+#else
+    (void)dev;
+    std::vector<uint8_t> pixels((size_t)rgba->w * rgba->h * 4);
+    for (int y = 0; y < rgba->h; y++)
+        memcpy(pixels.data() + (size_t)y * rgba->w * 4, (const uint8_t *)rgba->pixels + (size_t)y * rgba->pitch, (size_t)rgba->w * 4);
+    g_logo = vk_imgui_texture_rgba(pixels.data(), rgba->w, rgba->h);
+#endif
+    g_logo_w = rgba->w, g_logo_h = rgba->h;
+    SDL_DestroySurface(rgba);
+}
+
 static void load_background(GpuDevice dev) {
+    load_logo(dev);
     if (g_bg) return;
     char artwork[1100];
     if (rt_resource("launcher-background.png", "assets/artwork/hyrule-sky-islands-background-v1.png", artwork, sizeof artwork)) {
@@ -1855,7 +1891,11 @@ extern "C" void launcher_run(const char *root) {
             float x0 = 90 * s;
             ImGui::SetCursorPos(ImVec2(x0, 120 * s));
             ImGui::PushFont(g_font_title);
-            if (page == MAIN) {  // gold to orange, shadowed (not behind the Settings / Game Files windows)
+            if (page == MAIN && g_logo && g_logo_w > 0) {  // the logo, from near the top down to just above the menu
+                float h = 250 * s, w = h * g_logo_w / g_logo_h;
+                ImVec2 p(x0 - 20 * s, 28 * s);
+                ImGui::GetWindowDrawList()->AddImage(LOGO_TEXID, p, ImVec2(p.x + w, p.y + h));
+            } else if (page == MAIN) {  // gold to orange, shadowed (not behind the Settings / Game Files windows)
                 const char *t = "TOTKDroid";
                 ImVec2 p = ImGui::GetCursorScreenPos();
                 text_fx(ImGui::GetWindowDrawList(), ImGui::GetFont(), ImGui::GetFontSize(), p, IM_COL32(255, 232, 120, 255),
@@ -1863,37 +1903,6 @@ extern "C" void launcher_run(const char *root) {
                 ImGui::Dummy(ImGui::CalcTextSize(t));
             }
             ImGui::PopFont();
-#ifdef __ANDROID__
-            if (page == MAIN) {  // "Android" under the title, after the Android robot's head (Google, CC BY 3.0), in its green
-                ImDrawList *dl = ImGui::GetWindowDrawList();
-                ImGui::PushFont(g_font_menu);
-                float fs = ImGui::GetFontSize();
-                ImGui::SetCursorPosX(x0);
-                ImVec2 p = ImGui::GetCursorScreenPos();
-                p.y -= fs * 0.3f;  // (the title's line runs deep below its letters)
-                float r = fs * 0.34f;  // the head: a half disc on its flat side, two antennae, two eyes
-                ImVec2 c(p.x + 8 * s + r, p.y + fs * 0.66f);
-                const ImU32 green = IM_COL32(61, 220, 132, 255), shade = IM_COL32(4, 8, 30, 150);
-                auto head = [&](float dx, float dy, ImU32 col, bool eyes) {
-                    ImVec2 o(c.x + dx, c.y + dy);
-                    dl->PathArcTo(o, r, IM_PI, 2 * IM_PI, 32);
-                    dl->PathFillConvex(col);
-                    for (float sg : {-1.0f, 1.0f})
-                        dl->AddLine(ImVec2(o.x + sg * r * 0.45f, o.y - r * 0.78f), ImVec2(o.x + sg * r * 0.7f, o.y - r * 1.22f),
-                                    col, r * 0.09f);
-                    if (eyes)
-                        for (float sg : {-1.0f, 1.0f})
-                            dl->AddCircleFilled(ImVec2(o.x + sg * r * 0.42f, o.y - r * 0.42f), r * 0.1f, IM_COL32(16, 24, 48, 255));
-                };
-                head(2.5f * s, 2.5f * s, shade, false);
-                head(0, 0, green, true);
-                const char *t = "Android";
-                ImVec2 tp(c.x + r + fs * 0.28f, p.y);
-                for (float d : {2.5f, 1.5f}) dl->AddText(ImGui::GetFont(), fs, ImVec2(tp.x + d * s, tp.y + d * s), shade, t);
-                dl->AddText(ImGui::GetFont(), fs, tp, green, t);
-                ImGui::PopFont();
-            }
-#endif
             ImGui::SetCursorPos(ImVec2(x0, 285 * s));
             // typing in a text field / the on-screen keyboard (osk.h): B / Esc are for it, not "back" (from the frame
             // before too, so the Esc that ends the typing doesn't also leave the page)
@@ -2351,5 +2360,6 @@ extern "C" void launcher_run(const char *root) {
     ImGui::DestroyContext(ctx);
     ImGui::SetCurrentContext(prev_ctx);
     g_bg = 0;
+    g_logo = 0, g_logo_tried = false;
     g_start_screen = 0;
 }
