@@ -2,8 +2,8 @@
 
 **English** | [Português](README.pt-BR.md)
 
-A native port of *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, version **1.4.3**) for Android, in its
-first steps. This is **not emulation**: the game's own ARM64 code runs directly on your phone's CPU, the Switch's system
+A native port of *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, version **1.4.3**) for Android, in
+beta. This is **not emulation**: the game's own ARM64 code runs directly on your phone's CPU, the Switch's system
 is replaced by the runtime, and its graphics (NVN) are translated to Vulkan.
 
 It is built on the engine of **[LAS Recomp](https://github.com/peiikai/LASRecomp)** by peiikai (a recompilation of
@@ -15,9 +15,11 @@ Formerly **TOTKRecompAndroid**: renamed once the game's code ran natively and th
 it updates over an installed copy with its saves.
 
 > [!WARNING]
-> **Early.** On the phone (with the Turnip driver) the game loads a save in the prologue's cave and Link can be moved,
-> at about 30 fps; little beyond that has been played. The plan and the state of each phase are in
-> [docs/TOTK-PORT.md](docs/TOTK-PORT.md) (in Portuguese).
+> **Beta.** On the phone (with the Turnip driver) a new game or a save plays through the prologue, the cave and the
+> Great Sky Island; most of the map has not been played yet. With Video > Frame rate 60, a cool POCO F7 Ultra holds 60
+> fps in the prologue and 54-57 in the island's woods; over long sessions its heat brings that down to ~45. The plan
+> and the state of each phase are in [docs/TOTK-PORT.md](docs/TOTK-PORT.md) (in Portuguese).
+> Releases: [Releases](https://github.com/mamcjr/TOTKDroid/releases).
 
 ## Supported platform
 
@@ -34,12 +36,15 @@ Android only (arm64, Vulkan). Windows, Linux or macOS may be used as development
   recompilation (228,238 functions from `main` and 40,516 from the SDK, in a 224 MB `totkgame.so`) is kept for
   development (`LARECOMP_NATIVE=0`): walking in the cave it swung the frame time (sd 7.4 ms against 0.6 natively) and
   took hours to build on the phone, so the app no longer ships its builder.
-- On the phone (POCO F7 Ultra, the Turnip driver): the title screen, then a save loaded in the prologue's cave with
-  Link under control and the HUD and hints in Portuguese, at about 30 fps walking around (Turnip). The scene is held at 1600x896 (the game's
-  dynamic resolution gave black frames at each step) and the world steps by real time. Character voices, music and
-  ambience reach the mix (Opus decoding and the audio renderer's splitters; checked by recording the output on 1.4.2,
-  the port's previous version). With Qualcomm's own driver it plays too, at about 15 fps.
-- Not done yet: movies (not checked), widescreen, 60 fps, performance beyond the cave.
+- On the phone (POCO F7 Ultra, the Turnip driver): the title screen, a new game and saves; the prologue, the cave
+  (its walls and the cutscene backgrounds lit, as on the Switch) and the Great Sky Island, with the HUD, subtitles and
+  voices. Water, the sea of clouds, and the grass and lighting (no more black squares) match the Switch. The world
+  steps by real time, so frames above 16.7 ms never slow the game down. Character voices, music and ambience reach the
+  mix. With Qualcomm's own driver it plays too, more slowly.
+- Frame rate: Video > Frame rate has 30, Auto (prefers 60, cutscenes held at 30) and 60. The game's own dynamic
+  resolution is off; the scene is 1600x896, scaled to the output (FSR 1, GSR, SMAA / FXAA).
+- Video > Aspect ratio > Unlocked: the world and the menus fill a wide screen (the HUD stays in the middle 16:9).
+- Not done yet: most of the map, sustained 60 fps on a hot phone, the HUD at the screen's edges in wide mode.
 
 > [!IMPORTANT]
 > Like LAS Recomp, this project is made almost entirely with AI (Claude, by Anthropic, through Claude Code), directed,

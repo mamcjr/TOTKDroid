@@ -2,8 +2,8 @@
 
 [English](README.md) | **Português**
 
-Um port nativo de *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, versão **1.4.3**) para Android, nos
-primeiros passos. **Não é emulação**: o próprio código ARM64 do jogo roda direto na CPU do seu celular, o sistema do
+Um port nativo de *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, versão **1.4.3**) para Android, em
+beta. **Não é emulação**: o próprio código ARM64 do jogo roda direto na CPU do seu celular, o sistema do
 Switch é substituído pelo runtime, e os gráficos (NVN) são traduzidos para Vulkan.
 
 Feito sobre o motor do **[LAS Recomp](https://github.com/peiikai/LASRecomp)**, de peiikai (uma recompilação de
@@ -15,9 +15,10 @@ do app (30/10/2026). O endereço antigo do repositório redireciona para cá. O 
 (`com.totkrecompandroid`), então atualiza por cima de uma cópia instalada, com os saves.
 
 > [!WARNING]
-> **No começo.** No celular (com o driver Turnip) o jogo carrega um save na caverna do prólogo e dá para mover o Link, a
-> cerca de 30 fps; pouco além disso foi jogado. O plano e o estado de cada fase estão em
-> [docs/TOTK-PORT.md](docs/TOTK-PORT.md).
+> **Beta.** No celular (com o driver Turnip) um jogo novo ou um save vão do prólogo à caverna e à Grande Ilha Celestial;
+> a maior parte do mapa ainda não foi jogada. Com Vídeo > Taxa de quadros 60, um POCO F7 Ultra frio segura 60 fps no
+> prólogo e 54-57 no bosque da ilha; em sessões longas o calor do celular baixa isso para ~45. O plano e o estado de
+> cada fase estão em [docs/TOTK-PORT.md](docs/TOTK-PORT.md). Versões: [Releases](https://github.com/mamcjr/TOTKDroid/releases).
 
 ## Plataforma
 
@@ -36,12 +37,15 @@ Android.
   (228.238 funções do `main` e 40.516 do SDK, num `totkgame.so` de 224 MB) fica para desenvolvimento
   (`LARECOMP_NATIVE=0`): andando na caverna o frametime oscilava (desvio de 7,4 ms contra 0,6 no nativo) e o build no
   celular levava horas, então o app não traz mais o compilador.
-- No celular (POCO F7 Ultra, driver Turnip): a tela título e depois um save carregado na caverna do prólogo, com o
-  Link controlável e o HUD e as dicas em português, a cerca de 30 fps andando (Turnip). A cena fica em 1600x896 (a resolução dinâmica
-  do jogo dava quadros pretos a cada troca) e o mundo anda pelo tempo real. As vozes dos personagens, a música e o
-  ambiente chegam à mixagem (o decodificador Opus e os splitters do renderizador de áudio; conferido gravando a saída
-  na 1.4.2, a versão anterior do porte). Com o driver da própria Qualcomm também roda, a cerca de 15 fps.
-- Falta: os vídeos (não conferidos), o widescreen, os 60 fps, o desempenho além da caverna.
+- No celular (POCO F7 Ultra, driver Turnip): a tela título, jogo novo e saves; o prólogo, a caverna (as paredes e o
+  fundo das cutscenes iluminados, como no Switch) e a Grande Ilha Celestial, com o HUD, as legendas e as vozes. A
+  água, o mar de nuvens, a grama e a iluminação (sem os quadrados pretos) ficam como no Switch. O mundo anda pelo
+  tempo real, então quadros acima de 16,7 ms não deixam o jogo em câmera lenta. As vozes, a música e o ambiente chegam
+  à mixagem. Com o driver da própria Qualcomm também roda, mais devagar.
+- Taxa de quadros: Vídeo > Taxa de quadros tem 30, Auto (prefere 60, cutscenes em 30) e 60. A resolução dinâmica do
+  jogo fica desligada; a cena é 1600x896, escalada para a saída (FSR 1, GSR, SMAA / FXAA).
+- Vídeo > Proporção > Desbloqueado: o mundo e os menus ocupam a tela larga (o HUD fica nos 16:9 do meio).
+- Falta: a maior parte do mapa, 60 fps sustentados com o celular quente, o HUD nas bordas da tela no modo largo.
 
 > [!IMPORTANT]
 > Como o LAS Recomp, este projeto é feito quase inteiramente com IA (Claude, da Anthropic, pelo Claude Code), dirigido,
