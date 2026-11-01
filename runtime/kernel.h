@@ -39,6 +39,7 @@ struct KThread {
     KThread *wnext;
     KThread *snext;        // in WaitSynchronization (g_syncwaiters)
     pthread_cond_t cond;   // each thread sleeps on its own condition; wakers signal it directly
+    uint32_t wake_gen;     // bumped by every wake (kwait's spin before it sleeps; atomic)
     // in-place reboot (kernel_stop_threads): thread_main's setjmp point, where the thread unwinds to and ends
     jmp_buf unwind;
     bool started, finished;
@@ -51,6 +52,8 @@ struct KThread {
     bool core0_held;       // kernel.c: this thread has core 0 (it runs; the others of core 0 wait)
     bool core0_evicted;    // atomic request to reconcile core ownership at the next guest safe point
     KThread *core0_next;   // core-0 runnable queue (c0_m)
+    int32_t tid;           // the host thread's id (kernel_hot_tids: the performance hint session)
+    uint64_t cpu_ticks;    // its user + system time when kernel_hot_tids last looked
 #endif
 };
 

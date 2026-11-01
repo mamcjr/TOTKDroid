@@ -28,6 +28,7 @@ int vk_ab(const char *what);
 static uint64_t hash_words(uint64_t h, const void *p, size_t n);
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
+static uint64_t stat_dchained;  // (dispatches with no barrier before them: dchain)
 static uint64_t stat_feedback_reads;  // (attachments sampled as they are: only read, resolve_feedback)
 static uint64_t stat_inplace_breaks;  // (passes ended so a draw reads a target the pass wrote: resolve_feedback)
 static uint64_t stat_upload_bytes;
@@ -86,6 +87,11 @@ static uint64_t last_submit_ns;  // (begin_pass: LARECOMP_VK_CHUNK_US)
 #endif
 static pthread_mutex_t seq_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool in_pass;
+// Clears a pass begins with, done by its load operations instead (begin_pass): the records, and the aspects of each
+// (bit 0 colour / depth, bit 1 stencil) the pass's load already cleared
+static const void *g_cur_rec;  // (exec_list: the record being run)
+static struct { const void *rec; uint32_t aspects; } lclear[16];
+static int nlclear;
 static uint32_t pass_written;  // (the attachments this pass's draws wrote so far: draw_writes)
 static uint32_t pass_dup_null;  // (color slots left unbound: their image is bound in another slot - begin_pass)
 
@@ -206,7 +212,40 @@ static int tl_cmp(const void *x, const void *y) {
     const TlEv *p = x, *q = y;
     return p->t < q->t ? -1 : p->t > q->t;
 }
+// LARECOMP_FRAME_TIMELINE_SLOW=<ms>: the same events kept in a ring all along, and the last ~45 ms of them logged
+// when a frame takes longer than that (present to present; at most 8 times, 2 s apart) - what a slow frame waited on.
+static long tl_slow_ms = -2;
+static TlEv tl_ring[2048];
+static unsigned tl_ring_n;
+static void tl_slow_add(int64_t t, const char *what, uint64_t a, uint64_t b) {
+    pthread_mutex_lock(&tl_lock);
+    tl_ring[tl_ring_n++ & 2047] = (TlEv){t, what, a, b};
+    pthread_mutex_unlock(&tl_lock);
+}
+static void tl_slow_check(uint64_t period_ns, uint64_t now_ns) {
+    static int dumps;
+    static uint64_t last_dump;
+    if (tl_slow_ms <= 0 || period_ns < (uint64_t)tl_slow_ms * 1000000ull || dumps >= 8 || now_ns - last_dump < 2000000000ull) return;
+    if (renderer_present_count() < 2000) return;  // (the world, not the loading)
+    dumps++, last_dump = now_ns;
+    static int64_t tl_window_ns;  // (LARECOMP_FRAME_TIMELINE_WINDOW=<ms>: how far back, 45 by default)
+    if (!tl_window_ns) tl_window_ns = (getenv("LARECOMP_FRAME_TIMELINE_WINDOW") ? atol(getenv("LARECOMP_FRAME_TIMELINE_WINDOW")) : 45) * 1000000ll;
+    static TlEv ev[2048];
+    pthread_mutex_lock(&tl_lock);
+    unsigned n = tl_ring_n < 2048 ? tl_ring_n : 2048, k = 0;
+    for (unsigned i = tl_ring_n - n; i != tl_ring_n; i++)
+        if ((int64_t)now_ns - tl_ring[i & 2047].t < tl_window_ns) ev[k++] = tl_ring[i & 2047];
+    pthread_mutex_unlock(&tl_lock);
+    qsort(ev, k, sizeof *ev, tl_cmp);
+    LOG("[timeline] slow frame %.1f ms (frame %llu): the last 45 ms, %u events (ms before the present)\n", period_ns / 1e6,
+        (unsigned long long)renderer_present_count(), k);
+    for (unsigned i = 0; i < k; i++)
+        LOG("[timeline] %8.3f %s %llu %llu\n", ((int64_t)now_ns - ev[i].t) / -1e6, ev[i].what, (unsigned long long)ev[i].a,
+            (unsigned long long)ev[i].b);
+}
 static void tl_add(int64_t t, const char *what, uint64_t a, uint64_t b) {
+    if (tl_slow_ms == -2) tl_slow_ms = getenv("LARECOMP_FRAME_TIMELINE_SLOW") ? atol(getenv("LARECOMP_FRAME_TIMELINE_SLOW")) : 0;
+    if (tl_slow_ms > 0) { tl_slow_add(t, what, a, b); return; }
     if (tl_from == -2) tl_from = getenv("LARECOMP_FRAME_TIMELINE") ? atol(getenv("LARECOMP_FRAME_TIMELINE")) : -1;
     if (tl_from < 0) return;
     uint64_t f = renderer_present_count();
@@ -234,6 +273,12 @@ static int vk_counter_mode(void) {
     if (counter_mode < 0) {
         const char *e = getenv("LARECOMP_VK_COUNTER");
         counter_mode = e && !strcmp(e, "cpu") ? 0 : e && !strcmp(e, "frozen") ? 1 : e && !strcmp(e, "legacy") ? 3 : 2;
+        // TOTK (at the user's request, 2026-10-31): its dynamic resolution off - it lowers the 3D scene's resolution when
+        // these say the GPU is slow, and ours ran 17-21 ms in the woods, so the image kept dropping and coming back. Both
+        // of a frame's counters get one value (frozen): it always sees time to spare. Its 30 / 60 choice doesn't hang
+        // on them here (the runtime's: rt_totk_auto60, the Video tab). LARECOMP_VK_COUNTER=gpu: its own, as before.
+        extern int g_game_version;
+        if (!e && g_game_version == 143) counter_mode = 1;
         if (counter_mode == 2 && !g_vk.props.limits.timestampComputeAndGraphics) counter_mode = 0;
     }
     return counter_mode;
@@ -289,6 +334,9 @@ void vk_pace_frame(void) {
 #endif
     uint64_t now = plat_now_ns(), w = g_blocked_ns;
     uint64_t p = now - last, wt = w - last_wait;
+#ifdef __ANDROID__
+    if (last) tl_slow_check(p, now);
+#endif
     bool first = !last;
     last = now, last_wait = w;
     if (first || p > 100000000ull) return;  // (loading, a hitch: not a pace)
@@ -321,6 +369,26 @@ void vk_pace_frame(void) {
         double hint_busy = game_busy;
         double render_cpu = vk_async_on() ? vk_async_frame_cpu_ns() / 1e6 : 0;
         if (render_cpu > hint_busy) hint_busy = render_cpu;
+        // The frame's whole period but its wait for the present's vsync, and the game's busiest threads in the
+        // session: its frame waits on its job workers (a 25 ms frame was ~9 ms of the two threads' own work, ~20 ms
+        // waiting for the workers), and that work never showed - the session saw headroom, the CPUs stayed at
+        // ~2.4 GHz. LARECOMP_ADPF_PERIOD=0: the threads' own work only, as before; LARECOMP_AB=<n>:adpfw alternates.
+        static int adpf_period = -1;
+        if (adpf_period < 0) adpf_period = !getenv("LARECOMP_ADPF_PERIOD") || atoi(getenv("LARECOMP_ADPF_PERIOD")) != 0;
+        int abw = AB("adpfw");
+        if (abw >= 0 ? abw == 1 : adpf_period) {
+            extern uint64_t g_present_vsync_wait_ns;  // (nvn/objects.c: this frame's wait for the vsync grid)
+            uint64_t crit = p > g_present_vsync_wait_ns ? p - g_present_vsync_wait_ns : 0;
+            if (crit / 1e6 > hint_busy) hint_busy = crit / 1e6;
+            static uint64_t hot_at;
+            if (renderer_present_count() >= hot_at) {
+                hot_at = renderer_present_count() + 600;
+                extern int kernel_hot_tids(int32_t *out, int max);
+                int32_t tids[8];
+                int n = kernel_hot_tids(tids, 8);
+                if (n) plat_adpf_extra_threads(tids, n);
+            }
+        }
         plat_frame_work_gpu((uint64_t)(hint_busy * 1e6), no_gpu ? 0 : gpu, follow && pace_slow ? 33333333ull : 16666667ull,
                             (uint64_t)(game_busy * 1e6));
     }
@@ -393,8 +461,9 @@ void vk_pace_frame(void) {
     idx = (idx + 1) % 60;
     if (!pace_on) return;  // (measured and counted all the same: LARECOMP_LOG_PACE, the stats)
 #ifdef __ANDROID__
-    if (g_settings.fps_mode) {  // (Video: Frame rate 30 / 60) fixed: no measuring, no trials
-        bool slow = g_settings.fps_mode == 1;
+    extern bool rt_totk_auto(void), rt_totk_auto60(void);  // (nvn/objects.c: TOTK's Auto picks 30 / 60 there)
+    if (g_settings.fps_mode || rt_totk_auto()) {  // (Video: Frame rate 30 / 60) fixed: no measuring, no trials
+        bool slow = g_settings.fps_mode == 1 || (!g_settings.fps_mode && !rt_totk_auto60());
         if (slow != pace_slow) LOG("[pace] frame rate set to %d fps\n", slow ? 30 : 60);
         pace_slow = slow;
         return;
@@ -1366,9 +1435,9 @@ const char *renderer_stats(void) {
         LOG("\n");
     }
     snprintf(stats_text, sizeof stats_text,
-             "%llu draws, %llu skipped, %llu passes, %llu dispatches, %llu flushes, wait %.0fms, compile %d (waited %.0fms), fbcopy %llu (read %llu, breaks %llu), upload %.1fMB, binds %llu pipe %llu sets",
+             "%llu draws, %llu skipped, %llu passes, %llu dispatches (%llu chained), %llu flushes, wait %.0fms, compile %d (waited %.0fms), fbcopy %llu (read %llu, breaks %llu), upload %.1fMB, binds %llu pipe %llu sets",
              (unsigned long long)stat_draws, (unsigned long long)stat_skipped, (unsigned long long)stat_passes,
-             (unsigned long long)stat_dispatches, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
+             (unsigned long long)stat_dispatches, (unsigned long long)stat_dchained, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
              atomic_exchange(&stat_compiles, 0), (double)stat_build_wait_ns / 1e6, (unsigned long long)stat_feedback_copies, (unsigned long long)stat_feedback_reads, (unsigned long long)stat_inplace_breaks, (double)stat_upload_bytes / 1048576.0,
              (unsigned long long)stat_pipe_binds, (unsigned long long)stat_set_binds);
     stat_feedback_copies = stat_feedback_reads = stat_inplace_breaks = stat_upload_bytes = stat_build_wait_ns = stat_pipe_binds = stat_set_binds = 0;
@@ -1460,7 +1529,7 @@ const char *renderer_stats(void) {
         prof_tex_checks = prof_tex_samples = prof_tex_full = prof_tex_full_bytes = prof_tex_dyn = 0;
         prof_exec = prof_draw = prof_sets = prof_vtx = prof_submit = prof_pre = prof_key = prof_dyn = prof_tex = prof_up = prof_gpu = 0;
     }
-    stat_draws = stat_skipped = stat_passes = stat_dispatches = stat_flushes = stat_wait_ns = 0;
+    stat_draws = stat_skipped = stat_passes = stat_dispatches = stat_dchained = stat_flushes = stat_wait_ns = 0;
     return stats_text;
 }
 
@@ -1954,6 +2023,7 @@ static uint32_t level_extent(uint32_t v, uint32_t lv) { v >>= lv; return v ? v :
 static volatile uint64_t g_scene_frame;
 uint64_t vk_scene_frame(void) { return g_scene_frame; }
 
+static VkRect2D scissor_rect(void);
 static void begin_pass(void) {
     if (in_pass && !st.rt_dirty) return;
     pipeline_dirty = true;
@@ -1963,9 +2033,18 @@ static void begin_pass(void) {
         // when it differs from the last frame's; TOTK draws several of them a frame, at other sizes too)
         static uint32_t last_w, last_h;
         static int log_scene = -1;
-        if (log_scene < 0) log_scene = getenv("LARECOMP_LOG_SCENE") != NULL;
+        if (log_scene < 0) log_scene = getenv("LARECOMP_LOG_SCENE") ? atoi(getenv("LARECOMP_LOG_SCENE")) : 0;
         bool first = g_scene_frame != renderer_present_count();
         g_scene_frame = renderer_present_count();
+        {   // (LARECOMP_LOG_SCENE=2: also the viewport the game draws its scene at, when it changes - its dynamic
+            // resolution renders into part of its fixed targets)
+            static float last_vw, last_vh;
+            if (log_scene == 2 && first && (st.viewport[0][2] != last_vw || st.viewport[0][3] != last_vh)) {
+                LOG("[scene] frame %llu: viewport %.0f x %.0f of %u x %u\n", (unsigned long long)g_scene_frame, st.viewport[0][2],
+                    st.viewport[0][3], st.rt.color[0]->width, st.rt.color[0]->height);
+                last_vw = st.viewport[0][2], last_vh = st.viewport[0][3];
+            }
+        }
         if (log_scene && first && (st.rt.color[0]->width != last_w || st.rt.color[0]->height != last_h)) {
             LOG("[scene] frame %llu: %u x %u (viewport %.0f x %.0f), was %u x %u\n", (unsigned long long)g_scene_frame,
                 st.rt.color[0]->width, st.rt.color[0]->height, st.viewport[0][2], st.viewport[0][3], last_w, last_h);
@@ -2109,6 +2188,68 @@ static void begin_pass(void) {
     pass_noatt = !w;
     if (!w) { pass_sx = pass_sy = 1; noatt_dims(&minw, &minh); }
     pass_w = minw; pass_h = minh;
+    {   // LARECOMP_LOG_PASS_SCALE=<frame>: that frame's passes - the first target's guest and real size, the scale
+        static long at = -2;
+        if (at == -2) at = getenv("LARECOMP_LOG_PASS_SCALE") ? atol(getenv("LARECOMP_LOG_PASS_SCALE")) : -1;
+        NvnTexture *t0 = st.rt.ncolor ? st.rt.color[0] : st.rt.depth;
+        static uint64_t seen[64];  // (and, all along, each large target left unscaled, once)
+        static int nseen;
+        if (at >= 0 && t0 && t0->width >= 1280 && vk_texture_scale_group(t0) == 0 && nseen < 64) {
+            uint64_t key = (uint64_t)t0->width << 48 | (uint64_t)t0->height << 32 | (uint64_t)t0->format << 16 | t0->flags;
+            bool found = false;
+            for (int i = 0; i < nseen && !found; i++) found = seen[i] == key;
+            if (!found) {
+                seen[nseen++] = key;
+                LOG("[pass-scale] frame %llu: %ux%u fmt %#x flags %#x target %u left unscaled\n",
+                    (unsigned long long)renderer_present_count(), t0->width, t0->height, t0->format, t0->flags, t0->target);
+            }
+        }
+        if (at >= 0 && (long)renderer_present_count() == at && t0 && t0->backend)
+            LOG("[pass-scale] %ux%u flags %#x group %d -> %ux%u, scale %.3f x %.3f\n", t0->width, t0->height, t0->flags,
+                vk_texture_scale_group(t0), ((TexBackend *)t0->backend)->width, ((TexBackend *)t0->backend)->height, pass_sx,
+                pass_sy);
+    }
+    // A pass that begins with clears of whole attachments (TOTK's G-buffer and many of its ~145 passes a frame): their
+    // load operations clear instead. Loaded and then cleared by vkCmdClearAttachments, a tiler read each attachment from
+    // memory into every bin first, for nothing. Only the clears right at the start, one after another (the same
+    // scissor), each over the whole render area with every channel. LARECOMP_AB=<frames>:clrload, side 0: as before;
+    // LARECOMP_NO_CLEAR_LOAD=1: off.
+    nlclear = 0;
+    {
+        static int off = -1;
+        if (off < 0) off = getenv("LARECOMP_NO_CLEAR_LOAD") != NULL;
+        const CmdRec *q = g_cur_rec;
+        if (!off && AB("clrload") != 0 && q && (q->op == CMD_CLEAR_COLOR || q->op == CMD_CLEAR_DEPTH_STENCIL) && minw && minh &&
+            minw != UINT32_MAX) {
+            float s0 = vp_sx, s1 = vp_sy, s2 = vp_ox, s3 = vp_oy;
+            vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
+            VkRect2D rc = scissor_rect();
+            vp_sx = s0; vp_sy = s1; vp_ox = s2; vp_oy = s3;
+            bool whole = rc.offset.x == 0 && rc.offset.y == 0 && rc.extent.width >= minw && rc.extent.height >= minh;
+            uint32_t done = 0;  // (colour slots bits 0-7, depth 8, stencil 9: one clear each)
+            for (int k = 0; whole && k < 16 && q->size; k++) {
+                uint32_t asp = 0;
+                if (q->op == CMD_CLEAR_COLOR) {
+                    int idx = (int)q->x[0];
+                    if (idx < 0 || idx >= (int)pass_ncolor || !ca[idx].imageView || (q->x[2] & 0xF) != 0xF || (done >> idx & 1)) break;
+                    ca[idx].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                    memcpy(ca[idx].clearValue.color.float32, q->extra, 16);
+                    done |= 1u << idx;
+                    asp = 1;
+                } else if (q->op == CMD_CLEAR_DEPTH_STENCIL) {
+                    bool dz = q->x[0] != 0 && has_d && !(done >> 8 & 1);
+                    bool sz = has_s && st.rt.depth && renderer_format_has_stencil(st.rt.depth->format) && q->x[2] != 0 &&
+                              (q->x[2] & 0xFF) == 0xFF && !(done >> 9 & 1);
+                    if (q->x[0] != 0 && !dz) break;  // (a depth clear it can't take: left to vkCmdClearAttachments, and the rest)
+                    if (dz) { da.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; da.clearValue.depthStencil.depth = q->f[0]; done |= 1u << 8; asp |= 1; }
+                    if (sz) { sa.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; sa.clearValue.depthStencil.stencil = (uint32_t)q->x[1]; done |= 1u << 9; asp |= 2; }
+                    if (!asp) break;
+                } else break;
+                lclear[nlclear].rec = q, lclear[nlclear].aspects = asp, nlclear++;
+                q = (const CmdRec *)((const uint8_t *)q + q->size);
+            }
+        }
+    }
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {minw, minh}}, .layerCount = 1,
                           .colorAttachmentCount = pass_ncolor, .pColorAttachments = ca,
                           .pDepthAttachment = has_d ? &da : NULL, .pStencilAttachment = has_s ? &sa : NULL};
@@ -2344,6 +2485,17 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
         if (nw > pass_w || nh > pass_h) st.rt_dirty = true;
     }
     begin_pass();
+    for (int i = 0; i < nlclear; i++) {  // (done by the pass's load operations: begin_pass - each once)
+        if (lclear[i].rec != g_cur_rec) continue;
+        uint32_t asp = lclear[i].aspects;
+        lclear[i].rec = NULL;
+        if (index >= 0 && (asp & 1)) return;
+        if (index < 0) {
+            if (asp & 1) depth = false;
+            if (asp & 2) stencil = false;
+            if (!depth && !stencil) return;
+        }
+    }
     VkCommandBuffer cb = vk_cmd();
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
     VkRect2D rect = scissor_rect();
@@ -2585,6 +2737,8 @@ static void translate_program(void *arg) {
     maxwell_brx_window = !getenv("LARECOMP_BRX_ALL_LABELS");
     maxwell_static_stacks = !getenv("LARECOMP_DYN_STACKS");
     maxwell_structured = structure_on();
+    maxwell_struct_skips = !getenv("LARECOMP_NO_STRUCT_SKIPS");
+    maxwell_gfind_cache = !getenv("LARECOMP_NO_GFIND_CACHE");
     maxwell_no_switch = qcom_no_switch();
     maxwell_no_local_struct = qcom_no_switch() && !getenv("LARECOMP_QCOM_LOCAL");
     maxwell_native_half = !getenv("LARECOMP_BITWISE_HALF");
@@ -3749,6 +3903,37 @@ static bool up_patch_frag(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *
     return found;
 }
 
+// nn::ui2d: a pane (its vertex constants f, cb3, at least 0x230 bytes) at the layout's middle in x whose rectangle is
+// as wide as the 1280-unit layout, centred - at any height and y (a full screen's black, a band across it). The
+// rectangle drawn: cb3[33] (size, then origin), in the textured panes' vertex shaders and the window panes' alike (a
+// window's frame pieces each; cb3[11] is the whole window's size - by it, every piece of the menu's 4590-wide windows
+// counted, the hearts and the rupee too, and moved out g times farther: they jumped when the menu's page turned).
+// Off the middle too when it still covers the wide screen there (half its width past the offset by 960 units: a
+// menu's dark bands, 4590 wide, slide with its pages - clipped as narrower panes, they left lighter strips each side).
+static bool full_width_pane(const float *f) {
+    float ax = fabsf(f[19]);
+    return f[132] >= 1279.5f && fabsf(f[134] + f[132] * 0.5f) < 0.5f && (ax < 1.0f || f[132] * 0.5f - ax >= 960.0f);
+}
+
+// ... or a piece of a window that is (cb3[11]: the window's size): not clipped to the 16:9 part in the menus - the
+// menu's dimming is such a window, drawn in pieces (clipped, the cutout at its sides came back). Not moved by it.
+static bool full_width_window(const float *f) {
+    float ax = fabsf(f[19]);
+    return full_width_pane(f) || (f[44] >= 1279.5f && f[44] < 100000.0f && f[45] > 0 && f[46] == 0 && f[47] == 0 &&
+                                  (ax < 1.0f || f[44] * 0.5f - ax >= 960.0f));
+}
+
+// LARECOMP_LOG_PANEFIX=1 (diagnosis): each layout draw cbuf_info changes for the wide screen, and why
+static void panefix_log(const char *why, const float *f) {
+    static int on = -1;
+    if (on < 0) on = getenv("LARECOMP_LOG_PANEFIX") != NULL;
+    if (!on) return;
+    extern bool framepace_in_menu(void);
+    extern bool widescreen_in_menu(void);
+    LOG("[panefix] frame %llu fs %016llx %s x %.1f r33 %.0f %.0f r11 %.0f %.0f menu %d/%d\n", (unsigned long long)renderer_present_count(),
+        (unsigned long long)g_cur_fs_hash, why, f[19], f[132], f[133], f[44], f[45], framepace_in_menu(), widescreen_in_menu());
+}
+
 static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32_t gx, uint32_t gy, uint32_t gz) {
     static const uint8_t zeros[0x10000];
     if (k == 0) {
@@ -3909,6 +4094,46 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
         extern bool widescreen_ui_centred(void);
         const float *f = (const float *)(uintptr_t)r.addr;
         NvnTexture *t0 = st.rt.ncolor ? st.rt.color[0] : NULL;
+        {   // LARECOMP_LOG_UIPANE=1 (diagnosis): each fragment shader drawing into the final image, once: its first
+            // vertex constants (the layout's projection rows, the pane's x)
+            static int on = -1;
+            if (on < 0) on = getenv("LARECOMP_LOG_UIPANE") != NULL;
+            static uint64_t seen[256];
+            static int nseen;
+            if (on && t0 && vk_texture_scale_group(t0) == RS_OUT && nseen < 256) {
+                bool found = false;
+                uint64_t key = g_cur_fs_hash ^ (uint64_t)(int64_t)(size >= 0x230 ? f[19] * 16 : 0);
+                for (int i = 0; i < nseen && !found; i++) found = seen[i] == key;
+                if (!found) {
+                    seen[nseen++] = key;
+                    bool pn = size >= 0x230;
+                    LOG("[uipane] frame %llu fs %016llx size %#llx centred %d | 1/f0 %.2f 1/f5 %.2f f3 %.4f f7 %.4f | f12-15 %g %g %g %g "
+                        "| x %.1f m %.3f %.3f | r33 %.1f %.1f %.1f %.1f | r11 %.1f %.1f\n", (unsigned long long)renderer_present_count(),
+                        (unsigned long long)g_cur_fs_hash, (unsigned long long)size, widescreen_ui_centred(), f[0] ? 1 / f[0] : 0,
+                        f[5] ? 1 / f[5] : 0, f[3], f[7], f[12], f[13], f[14], f[15], pn ? f[19] : 0, pn ? f[16] : 0, pn ? f[21] : 0,
+                        pn ? f[132] : 0, pn ? f[133] : 0, pn ? f[134] : 0, pn ? f[135] : 0, pn ? f[44] : 0, pn ? f[45] : 0);
+                }
+            }
+        }
+        // TOTK: its layouts are 1920x1080 units through an orthographic 16:9 camera (cb3[0..3] = 1/960 across, the last
+        // row 0 0 0 1), not widened by the camera hooks. On the wide image each draws in the middle 16:9 part, in its
+        // own proportions (the projection's x row / g; text: its one matrix's x row), and a pane as wide as the layout,
+        // centred - a screen's background, a menu's blurred world - still covers the whole width (its x row * g).
+        // Squeezed back into 16:9 by the present instead, the save list, the loading screens and the menus had bars.
+        if (g_game_version == 143 && t0 && vk_texture_scale_group(t0) == RS_OUT && size >= 0x80 && f[0] > 0 && f[1] == 0 &&
+            f[2] == 0 && f[4] == 0 && f[12] == 0 && f[13] == 0 && f[14] == 0 && f[15] == 1.0f &&
+            fabsf(fabsf(f[5]) / f[0] - 16.0f / 9.0f) < 0.01f) {
+            extern bool widescreen_allowed(void);
+            float g = widescreen_factor();
+            if (widescreen_allowed() && g > 1.001f) {
+                VkSpan c = vk_transient_copy(f, size, 256);
+                float *m = (float *)c.ptr;
+                for (int i = 0; i < 4; i++) m[i] /= g;
+                if (size >= 0x230 && f[132] >= 1919.5f && fabsf(f[134] + f[132] * 0.5f) < 0.5f && fabsf(f[19]) < 1.0f)
+                    for (int i = 16; i < 20; i++) m[i] *= g;
+                return ubo_span(c, size);
+            }
+        }
         if (widescreen_ui_centred() && t0 && vk_texture_scale_group(t0) == RS_OUT && f[12] == 0 && f[13] == 0 && f[14] == -1.0f &&
             f[1] == 0 && f[2] == 0) {
             float g = widescreen_factor();
@@ -3917,26 +4142,50 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                 LOG("[pane] fs %016llx x %.1f y %.1f m %.3f %.3f proj %.3f %.3f wide %d\n", (unsigned long long)g_cur_fs_hash, f[19],
                     f[23], f[16], f[21], f[0], f[5], g_wide_backdrop);
             if (size >= 0x230 && f[15] == 0 && f[0] > 0 && fabsf(f[5] / f[0] - 16.0f / 9.0f * g) < 0.01f && g_wide_backdrop &&
-                fabsf(f[19]) < 1.0f && g_cur_fs_hash == 0xd4fa32dabc35066cull) {
-                // (the blurred world: nn::ui2d's textured pane shader, centred - not the 3D Link beside the inventory,
-                // a picture of a widened target too)
+                fabsf(f[19]) < 1.0f && (g_cur_fs_hash == 0xd4fa32dabc35066cull || g_cur_fs_hash == 0xc94630386244616eull)) {
+                // (the blurred world: nn::ui2d's textured pane shader, centred; and the pause menu's layer over it that
+                // holds the 3D Link and the menu's darkening, c9463038 - left in the middle 16:9 part, it darkened only
+                // that part: an edge each side, 2026-10-28)
                 VkSpan c = vk_transient_copy(f, size, 256);  // (the pane's x row, about the layout's middle)
                 for (int i = 16; i < 20; i++) ((float *)c.ptr)[i] *= g;
                 return ubo_span(c, size);
-            } else if (size >= 0x230 && f[15] == 0 && f[0] > 0 && g > 1.001f && fabsf(f[5] / f[0] - 16.0f / 9.0f) < 0.01f &&
-                       framepace_in_menu()) {
-                // A menu layout drawn through a camera of its own left at 16:9 (the inventory's cursor) would land
-                // g times farther from the middle than the rest: its projection's x row as the widened camera's
+            } else if (size >= 0x230 && f[15] == 0 && f[0] > 0 && fabsf(f[5] / f[0] - 16.0f / 9.0f * g) < 0.01f &&
+                       full_width_pane(f)) {
+                panefix_log("full-width", f);
+                // A pane as wide as the layout, about its middle (the Game Over screen's black, a menu's dimming, a
+                // loading screen's band) covers the widened screen, not only its middle 16:9 part (the world showed at
+                // the sides, 2026-10-28), at any scale (the Game Over fade animates it)
                 VkSpan c = vk_transient_copy(f, size, 256);
-                for (int i = 0; i < 4; i++) ((float *)c.ptr)[i] /= g;
+                for (int i = 16; i < 20; i++) ((float *)c.ptr)[i] *= g;
+                return ubo_span(c, size);
+            } else if (size >= 0x230 && f[15] == 0 && f[0] > 0 && g > 1.001f && fabsf(f[5] / f[0] - 16.0f / 9.0f) < 0.01f) {
+                // A layout drawn through a camera of its own left at 16:9 - the inventory's cursor, the loading
+                // screens - would stretch across the wide image (the cursor g times farther from the middle than the
+                // rest): its projection's x row as the widened camera's, so it lands in the middle 16:9 part like the
+                // others. A pane that is the whole layout (the loading screens' black) still covers the screen. The
+                // loading screens were drawn stretched and squeezed back into 16:9 with bars by the present - the
+                // image shrank to load and stretched back to the world (2026-10-28).
+                panefix_log(full_width_pane(f) ? "16:9-cam full-width" : "16:9-cam", f);
+                VkSpan c = vk_transient_copy(f, size, 256);
+                float *m = (float *)c.ptr;
+                for (int i = 0; i < 4; i++) m[i] /= g;
+                if (full_width_pane(f))
+                    for (int i = 16; i < 20; i++) m[i] *= g;
                 return ubo_span(c, size);
             } else if (size >= 0x230 && f[15] == 0 && f[0] > 0 && fabsf(f[5] / f[0] - 16.0f / 9.0f * g) < 0.01f) {
                 float d = widescreen_hud_shift(f[19]);
                 if (d != 0) {
+                    panefix_log("hud-shift", f);
                     VkSpan c = vk_transient_copy(f, size, 256);
                     ((float *)c.ptr)[19] += d;
                     return ubo_span(c, size);
                 }
+            } else if (f[15] > 1.0f && g > 1.001f && f[0] > 0 && fabsf(f[5] / f[0] - 16.0f / 9.0f) < 0.01f) {
+                // Text through a layout camera left at 16:9 (a loading screen's tip): its x row narrowed like the
+                // panes' projection above, or it sat apart from its box (2026-10-28)
+                VkSpan c = vk_transient_copy(f, size, 256);
+                for (int i = 0; i < 4; i++) ((float *)c.ptr)[i] /= g;
+                return ubo_span(c, size);
             } else if (f[15] > 1.0f) {
                 float d = widescreen_hud_shift(f[3] / f[15] * g * 640.0f);  // (layout x of the origin: 640 g units a side)
                 if (d != 0) {
@@ -4413,10 +4662,35 @@ static void gfast_prepare(VkCommandBuffer cb) {
     gfast_n = m;
 }
 
+// Dispatches one after another with no barrier of the game's between them: NVN orders them only on
+// nvnCommandBufferBarrier, so the game keeps them independent - and each full barrier around a small dispatch drained
+// the GPU (TOTK: ~60 dispatches a frame, most 1x1x1 at ~45 us each, runs of 20+ of the same shader). Between such
+// dispatches no barrier then; the one owed after a storing dispatch comes before the next thing that isn't a dispatch,
+// a bind or state. LARECOMP_VK_DISPATCH_CHAIN=0: a barrier around every dispatch, as before.
+static bool dchain;              // the last GPU work recorded was a dispatch; since then only binds and state
+static VkCommandBuffer dchain_cb;
+static bool dchain_after;        // that dispatch's barrier after it is still owed
+static bool dchain_ok(void) {
+    int ab = AB("dbar");
+    if (ab >= 0) return ab == 1;
+    static int on = -1;
+    if (on < 0) on = !getenv("LARECOMP_VK_DISPATCH_CHAIN") || atoi(getenv("LARECOMP_VK_DISPATCH_CHAIN")) != 0;
+    return on;
+}
+static bool dchain_keeps(uint32_t op) {  // (records no GPU work: binds, state, the CPU's uniform updates, list jumps)
+    return (op >= CMD_BIND_PROGRAM && op <= CMD_SET_RENDER_ENABLE) || op == CMD_END || op == CMD_JUMP || op == CMD_CALL ||
+           op == CMD_UPDATE_UNIFORM_BUFFER || op == CMD_SET_COPY_STRIDES || op == CMD_SET_DEPTH_CLAMP ||
+           op == CMD_BIND_TEXTURES_DEFERRED || op == CMD_SET_RENDER_ENABLE_COND;
+}
+
 // After a storing dispatch: its ranges back to the heap (before anything else reads them: draws, the CPU after the fence).
 static void gfast_finish(VkCommandBuffer cb) {
 #ifdef __ANDROID__
-    if (gfast_win.buffer) { vk_full_barrier(cb); return; }  // (stored into the heap itself: visible to what follows)
+    if (gfast_win.buffer) {  // (stored into the heap itself: visible to what follows)
+        if (dchain_ok()) dchain_after = true;
+        else vk_full_barrier(cb);
+        return;
+    }
 #endif
     if (!gfast_n) return;
     VkBufferCopy back[GMAP_MAX];
@@ -5420,13 +5694,34 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
 #endif
         } else if (b->binding == 18) {
 #ifdef __ANDROID__
+            // The table as last uploaded for this stage, by what it holds - row 0, the shader's textures' scales, the
+            // mirror width: the same ones reuse its copy, without clearing and comparing the whole 1 KB table (twice
+            // for each of ~5000 draws a frame in TOTK's woods). LARECOMP_AB=<frames>:rscache, side 0: always built.
+            static struct { uint64_t seq; int nt; float r0[4], mw; float sc[64][2]; VkSpan span; } rl[2];
+            int nt = si->ntex < 64 ? si->ntex : 64;
+            float r0[4] = {1, 1, 0, 0};
+            if (rscale_row0) memcpy(r0, rscale_row0, 16);
+            uint64_t rseq = vk_pending_seq();
+            if (AB("rscache") != 0 && rl[sg].seq == rseq && rl[sg].nt == nt && rl[sg].mw == g_mirror_w &&
+                !memcmp(rl[sg].r0, r0, sizeof r0) && !memcmp(rl[sg].sc, tex_sc[sg], (size_t)nt * sizeof rl[sg].sc[0])) {
+                bi[n] = ubo_span(rl[sg].span, sizeof rs);
+                w[n].pBufferInfo = &bi[n];
+                n++;
+                continue;
+            }
             memset(rs, 0, sizeof rs);
             rs[0][0] = rs[0][1] = 1;  // ([65]: mirror mode, renderer.m)
             if (rscale_row0) memcpy(rs[0], rscale_row0, 16);
             rs[65][0] = g_mirror_w;
 #endif
             for (int t = 0; t < si->ntex && t < 64; t++) { rs[1 + t][0] = tex_sc[sg][t][0]; rs[1 + t][1] = tex_sc[sg][t][1]; }
-            bi[n] = ubo_span(copy_dedupe(sg ? DEDUPE_RSCALE_F : DEDUPE_RSCALE_V, rs, sizeof rs, 256), sizeof rs);
+            VkSpan rspan = copy_dedupe(sg ? DEDUPE_RSCALE_F : DEDUPE_RSCALE_V, rs, sizeof rs, 256);
+#ifdef __ANDROID__
+            rl[sg].seq = rseq, rl[sg].nt = nt, rl[sg].mw = g_mirror_w, rl[sg].span = rspan;
+            memcpy(rl[sg].r0, r0, sizeof r0);
+            memcpy(rl[sg].sc, tex_sc[sg], (size_t)nt * sizeof rl[sg].sc[0]);
+#endif
+            bi[n] = ubo_span(rspan, sizeof rs);
         } else {
             float zero[8] = {0};
             bi[n] = ubo_span(copy_dedupe(DEDUPE_TINT, tint ? tint : zero, 32, 256), 32);
@@ -5543,6 +5838,8 @@ static CsProg *compute_program(NvnProgram *np) {
     maxwell_brx_window = !getenv("LARECOMP_BRX_ALL_LABELS");
     maxwell_static_stacks = !getenv("LARECOMP_DYN_STACKS");
     maxwell_structured = structure_on();
+    maxwell_struct_skips = !getenv("LARECOMP_NO_STRUCT_SKIPS");
+    maxwell_gfind_cache = !getenv("LARECOMP_NO_GFIND_CACHE");
     maxwell_no_switch = qcom_no_switch();
     maxwell_no_local_struct = qcom_no_switch() && !getenv("LARECOMP_QCOM_LOCAL");
     maxwell_native_half = !getenv("LARECOMP_BITWISE_HALF");
@@ -5627,7 +5924,11 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     }
     vk_end_pass();
     VkCommandBuffer cb = vk_cmd();
-    vk_full_barrier(cb);
+    bool chained = dchain && cb == dchain_cb && dchain_ok();
+    if (chained) stat_dchained++;
+    else vk_full_barrier(cb);
+    dchain = false;
+    dchain_after = false;
     gp_mark(cb, "dispatch %ux%ux%u (local %ux%ux%u) cs %llx gmem %d", gx, gy, gz, cp->local[0], cp->local[1], cp->local[2],
             (unsigned long long)st.program->stages[5].code_addr, cp->si->uses_gmem);
     dl_note("dispatch %ux%ux%u cs %llx gmem %d", gx, gy, gz, (unsigned long long)st.program->stages[5].code_addr, cp->si->uses_gmem);
@@ -5652,6 +5953,10 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     if (cp->si->uses_gmem_map && cp->si->uses_gmem_store) gfast_finish(cb);
     if (cp->si->uses_gmem_store) vc_mark_sbufs(5), note_gmem_store(5);
     stat_dispatches++;
+#ifdef __ANDROID__
+    dchain = !gcopy_mode && !gfast_n;  // (a copy mode's ranges go through gfast_buf: those keep their barriers)
+#endif
+    dchain_cb = cb;
 }
 
 // ================================================================== draws
@@ -6354,6 +6659,22 @@ static void draw_(CmdRec *r, bool indexed) {
             if (k16 < 0) k16 = getenv("LARECOMP_D16_BIAS_SCALE") ? (float)atof(getenv("LARECOMP_D16_BIAS_SCALE")) : 0;
             if (k16 > 0 && on && st.rt.depth && st.rt.depth->backend &&
                 ((TexBackend *)st.rt.depth->backend)->format == VK_FORMAT_D16_UNORM) f[1] *= k16;
+        }
+        {   // LARECOMP_LOG_DEPTH_BIAS=1 (diagnosis): each depth format / bias the draws use, once
+            static int log = -1, n;
+            static uint64_t seen[32];
+            if (log < 0) log = getenv("LARECOMP_LOG_DEPTH_BIAS") != NULL;
+            if (log && on && st.rt.depth && st.rt.depth->backend && n < 32) {
+                uint64_t key = (uint64_t)((TexBackend *)st.rt.depth->backend)->format << 40 ^ (uint64_t)(uint32_t)(f[1] * 64) << 8 ^
+                               (uint64_t)(uint32_t)(f[2] * 64);
+                bool found = false;
+                for (int i = 0; i < n && !found; i++) found = seen[i] == key;
+                if (!found) {
+                    seen[n++] = key;
+                    LOG("[depthbias] guest fmt %#x %ux%u -> vk %d: constant %g slope %g clamp %g\n", st.rt.depth->format,
+                        st.rt.depth->width, st.rt.depth->height, ((TexBackend *)st.rt.depth->backend)->format, f[1], f[2], f[0]);
+                }
+            }
         }
         if (equal_tol) { f[1] -= 8; on = true; }  // (see the EQUAL comment above: a few depth ulps nearer)
         if (g_vk.eds2 && ss_need(SS_DBE, ss.dbe == (VkBool32)on)) { ss.dbe = on; vkCmdSetDepthBiasEnable(cb, on); }
@@ -7091,7 +7412,13 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
     }
     // scaled / converting copy: the game builds its depth pyramid this way (nearest), colour copies filter if asked
     bool depth = (sa | da) & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
-    if (depth && s->format != d->format) return;
+    if (depth && s->format != d->format) {
+        static int nlog;
+        if (nlog++ < 20)
+            LOG("[copytex] depth copy between formats skipped: %ux%u f%#x vk %d -> %ux%u f%#x vk %d\n", st_->width, st_->height,
+                st_->format, s->format, dt->width, dt->height, dt->format, d->format);
+        return;
+    }
     VkImageBlit bl = {.srcSubresource = {depth ? (sa & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : sa) : sa, slv, sly, 1},
                       .srcOffsets = {{sx0, sy0, 0}, {sx0 + sw, sy0 + sh, 1}},
                       .dstSubresource = {depth ? (da & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : da) : da, dlv, dly, 1},
@@ -7612,13 +7939,64 @@ static void split_long_pass(void) {
 #endif
 }
 
+// Render enable (nvnCommandBufferSetRenderEnable / ...Conditional): while off, draws and clears do nothing. The
+// conditional form compares two counter reports at an address as the list runs - the counters are written then too,
+// in order (CMD_REPORT_COUNTER) - as Maxwell does (yuzu ProcessQueryCondition): each report's 64-bit value, at +0 and
+// +16, mode 0 renders when equal, 1 when not. TOTK clears a transient target "on first use" so: a clear under
+// "render if the slot's report differs from zero", and a timestamp report into the slot right after. Ignored, every
+// such clear ran: its half-resolution lighting array was cleared before each lighting group and before the ambient
+// pass read it - cave rock and cutscene backdrops lit by fog alone. LARECOMP_NO_RENDER_ENABLE=1: ignored, as before.
+static bool render_off;
+static bool render_enable_on(void) {
+    static int on = -1;
+    if (on < 0) on = getenv("LARECOMP_NO_RENDER_ENABLE") == NULL;
+    return on;
+}
+
 static void exec_list(uint64_t handle, int depth) {
     uint64_t p = handle;
     for (int guard = 0; guard < 10000000; guard++) {
         CmdRec *r = (CmdRec *)(uintptr_t)p;
         void *x = r->extra;
+        g_cur_rec = r;
+        if (nlclear && r->op != CMD_CLEAR_COLOR && r->op != CMD_CLEAR_DEPTH_STENCIL) nlclear = 0;  // (begin_pass's, used up)
         if (r->op < CMD_COUNT) op_counts[r->op]++;
+        if (render_off && (r->op == CMD_DRAW_ARRAYS || r->op == CMD_DRAW_ELEMENTS || r->op == CMD_DRAW_ARRAYS_INDIRECT ||
+                           r->op == CMD_DRAW_ELEMENTS_INDIRECT || r->op == CMD_DRAW_TEXTURE || r->op == CMD_CLEAR_COLOR ||
+                           r->op == CMD_CLEAR_DEPTH_STENCIL || r->op == CMD_CLEAR_TEXTURE)) {
+            static int log = -1;  // (LARECOMP_LOG_RENDER_ENABLE: how many draws and clears were left out, every 120 frames)
+            static uint64_t ndraw, nclear, at;
+            if (log < 0) log = getenv("LARECOMP_LOG_RENDER_ENABLE") != NULL;
+            bool clr = r->op == CMD_CLEAR_COLOR || r->op == CMD_CLEAR_DEPTH_STENCIL || r->op == CMD_CLEAR_TEXTURE;
+            clr ? nclear++ : ndraw++;
+            if (log && renderer_present_count() >= at) {
+                at = renderer_present_count() + 120;
+                LOG("[vk] render enable: %llu draws, %llu clears left out\n", (unsigned long long)ndraw, (unsigned long long)nclear);
+                ndraw = nclear = 0;
+            }
+            p += r->size;
+            continue;
+        }
+        if (dchain && r->op != CMD_DISPATCH && !dchain_keeps(r->op)) {  // (the dispatches' run ends)
+            dchain = false;
+            if (dchain_after) vk_full_barrier(vk_cmd());
+            dchain_after = false;
+        }
         switch (r->op) {
+        case CMD_SET_RENDER_ENABLE: render_off = render_enable_on() && r->x[0] == 0; break;
+        case CMD_SET_RENDER_ENABLE_COND: {  // (mode, counters address)
+            const uint64_t *v = (const uint64_t *)(uintptr_t)r->x[1];
+            render_off = false;
+            if (!render_enable_on() || (uint64_t)(uintptr_t)v < GUEST_LO || (uint64_t)(uintptr_t)v + 32 > GUEST_HI) break;
+            bool eq = v[0] == v[2];
+            render_off = r->x[0] == 0 ? !eq : eq;
+            static int log = -1, nlog;
+            if (log < 0) log = getenv("LARECOMP_LOG_RENDER_ENABLE") != NULL;
+            if (log && nlog++ < 60)
+                LOG("[vk] frame %llu: render enable if %s: %llx vs %llx -> %s\n", (unsigned long long)renderer_present_count(),
+                    r->x[0] == 0 ? "equal" : "not equal", (unsigned long long)v[0], (unsigned long long)v[2], render_off ? "off" : "on");
+            break;
+        }
         case CMD_END: return;
         case CMD_JUMP: p = r->x[0]; continue;
         case CMD_CALL: {

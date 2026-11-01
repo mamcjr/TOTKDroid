@@ -1313,6 +1313,13 @@ void backend_present(NvnTexture *t) {
             last_dw = dw, last_dh = dh;
         }
         output_scale(dw, dh, widescreen_allowed(), SDL_GetTicksNS() / 1e9, -1, &os);
+        {
+            static double last_shape = -1;
+            if (os.shape != last_shape && getenv("LARECOMP_LOG_ASPECT"))
+                LOG("[widescreen] frame %llu: output shape %.3f (allowed %d), image %.0fx%.0f at %.0f,%.0f\n",
+                    (unsigned long long)total_frames, os.shape, widescreen_allowed(), os.vw, os.vh, os.vx, os.vy);
+            last_shape = os.shape;
+        }
 #ifdef __ANDROID__
         static int matrix_trace = -1;
         static uint64_t matrix_last;
@@ -1399,7 +1406,8 @@ void backend_present(NvnTexture *t) {
         if (g_debug_frame) vk_pick_report();
     }
     g_debug_frame = debug_at && total_frames >= (uint64_t)debug_at && total_frames < (uint64_t)debug_at + (uint64_t)debug_n;
-    {   // LARECOMP_GPUPROF_AT=<frame>[,<frame>...]: GPU time per pass of those frames ("[gpuprof]" in the log)
+    {   // LARECOMP_GPUPROF_AT=<frame>[,<frame>...] (or : between them, inside a LARECOMP env list): GPU time per pass of
+        // those frames ("[gpuprof]" in the log)
         extern bool g_gpuprof_frame;
         extern void vk_gpuprof_report(void);
         if (g_gpuprof_frame) { g_gpuprof_frame = false; vk_gpuprof_report(); }
@@ -1407,7 +1415,7 @@ void backend_present(NvnTexture *t) {
         for (const char *p = e; p && *p;) {
             long at = strtol(p, (char **)&p, 10);
             if (at == (long)total_frames) { g_gpuprof_frame = true; break; }
-            if (*p == ',') p++; else break;
+            if (*p == ',' || *p == ':') p++; else break;
         }
         // LARECOMP_GPUPROF_SLOW=<ms>: the frame after one that took longer than that (present to present), at most
         // 12 of them, 90 frames apart - the slow moments of a session that come and go (TOTK's 300 ms frames)

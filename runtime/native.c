@@ -246,6 +246,19 @@ static int fix_cutscene2(Cpu *c) { (void)c; rt_cutscene_tick(2); return 0; }
 static int fix_cutscene3(Cpu *c) { (void)c; rt_cutscene_tick(3); return 0; }
 uint32_t rt_interval_pick(uint32_t game);
 static int fix_interval_pick(Cpu *c) { c->x[21] = rt_interval_pick((uint32_t)c->x[21]); return 0; }  // mov w8, #0x3c
+// Free aspect: the four places 1.4.3 hands an aspect ratio to a camera's perspective projection (sead's +0xb0), the
+// sites MacNativeGames found for its own wide screens: the camera's update and setup copying it, and two viewport
+// width / height divisions. Each runs here and gives a ratio near 16:9 the window's shape (hle/widescreen.c).
+float rt_widen_aspect(float a);
+static int fix_aspect_load(Cpu *c, int rn, uint32_t off) {  // ldr s0, [x<rn>, #off]
+    float a;
+    memcpy(&a, (const void *)(uintptr_t)(c->x[rn] + off), 4);
+    vset(c, 0, rt_widen_aspect(a));
+    return 3;
+}
+static int fix_aspect_cam(Cpu *c) { return fix_aspect_load(c, 19, 0x140); }
+static int fix_aspect_setup(Cpu *c) { return fix_aspect_load(c, 22, 0x68); }
+static int fix_aspect_view(Cpu *c) { vset(c, 0, rt_widen_aspect(vget(c, 0) / vget(c, 1))); return 3; }  // fdiv s0, s0, s1
 static int fix_fade_w8(Cpu *c) { return fade_step(c, 8); }
 static int fix_fade_w10(Cpu *c) { return fade_step(c, 10); }
 typedef struct { int version; uint64_t addr, alt; uint32_t word; int (*fn)(Cpu *); const char *what; } Fix;
@@ -278,6 +291,10 @@ static const Fix fixes[] = {  // (canonical addresses, 0x7000000000 + the offset
     {143, 0x700042c3bc, 0, 0xd10283ff, fix_cutscene2, "cutscene mark"},
     {143, 0x7000a5a188, 0, 0xf9401008, fix_cutscene3, "cutscene mark"},
     {143, 0x70002db238, 0, 0x52800788, fix_interval_pick, "the interval picked (2 in cutscenes)"},
+    {143, 0x7000628c74, 0, 0xbd414260, fix_aspect_cam, "camera aspect (update)"},
+    {143, 0x7000b43460, 0, 0xbd406ac0, fix_aspect_setup, "camera aspect (setup)"},
+    {143, 0x7001ff04f4, 0, 0x1e211800, fix_aspect_view, "camera aspect (viewport)"},
+    {143, 0x700253fbb0, 0, 0x1e211800, fix_aspect_view, "camera aspect (viewport)"},
 };
 int native_patch_c(Cpu *c, uint32_t i) { return fixes[i].fn(c); }
 

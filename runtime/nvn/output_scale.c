@@ -22,6 +22,8 @@
 #define MAX_TEX 16384.0
 #define SCENE_LINES 900.0  // (BOTW's docked 3D scene: 1600x900)
 
+int g_present_vsyncs;  // (nvn/objects.c: the vsyncs the last present waited for, 0 before the first)
+
 // Dynamic resolution: a factor on the Match display scale, 0.5 .. 1 in 0.05 steps.
 static double g_dyn = 1.0;
 static double g_dyn_gpu_sum, g_dyn_dt_sum, g_last_t;
@@ -33,7 +35,10 @@ static void dyn_update(double now, double gpu_ms) {
     double dt = g_last_t > 0 ? (now - g_last_t) * 1000.0 : 16.7;
     g_last_t = now;
     if (dt > 250) return;  // (loading, menus, a stall: not the GPU's steady state)
-    double want = framepace_on() && framepace_target() > 0 ? 1000.0 / framepace_target() : 1000.0 / 30;  // (ms a frame)
+    // (ms a frame: BOTW's pacer's target, else the present's interval - TOTK at 60 presents every vsync; with 30 ms
+    // assumed there, frames of 19-22 ms looked like room and its dynamic resolution rose to the top, 2026-10-31)
+    double want = framepace_on() && framepace_target() > 0 ? 1000.0 / framepace_target()
+                : g_present_vsyncs > 0 ? 1000.0 / 60 * g_present_vsyncs : 1000.0 / 30;
     g_dyn_dt_sum += dt;
     g_dyn_n++;
     if (gpu_ms >= 0) { g_dyn_gpu_sum += gpu_ms; g_dyn_gpu_n++; }

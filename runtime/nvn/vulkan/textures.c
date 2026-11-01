@@ -75,15 +75,7 @@ static VkFmt fmt_of(uint32_t f) {
     case 0x2F: return (VkFmt){VK_FORMAT_R32G32B32A32_UINT};
     case 0x30: return (VkFmt){VK_FORMAT_R32G32B32A32_SINT};
     case 0x31: return (VkFmt){VK_FORMAT_S8_UINT};
-    case 0x32: {
-        // (experiment) LARECOMP_VK_D16_AS_D32=1: D16 as 32-bit float. kuraeow/ultratears: TOTK classifies lighting tiles
-        // with an EQUAL test of a depth one pass writes as gl_FragDepth = material id against quads the lighting passes
-        // rasterise at that z - in a UNORM buffer the two conversions may round apart on a non-Maxwell GPU, and the world
-        // was unlit (their D16, 2026-10-23); a float buffer stores both exactly. Our walls lit by fog only?
-        static int f32 = -1;
-        if (f32 < 0) f32 = getenv("LARECOMP_VK_D16_AS_D32") && atoi(getenv("LARECOMP_VK_D16_AS_D32"));
-        return (VkFmt){f32 ? VK_FORMAT_D32_SFLOAT : VK_FORMAT_D16_UNORM};
-    }
+    case 0x32: return (VkFmt){VK_FORMAT_D16_UNORM};  // (screen-sized ones: D32 float, create_image)
     case 0x33: return (VkFmt){VK_FORMAT_D32_SFLOAT};  // DEPTH24 (as on Metal: no 24-bit depth there)
     case 0x34: return (VkFmt){VK_FORMAT_D32_SFLOAT};
     case 0x35: return (VkFmt){depth24_stencil8()};
@@ -263,6 +255,12 @@ static uint8_t tex_scale_group(const NvnTexture *t) {
     static int on = -1;
     if (on < 0) on = getenv("LARECOMP_NO_SCALE") == NULL;
     if (!on) return RS_NONE;
+    // (TOTK 1.4.3 makes its final 1920x1080 images - the composition, fmt 0x3f, and its copy, 0x25 - without the
+    // render-target flag: left unscaled, a free aspect's wide view landed in the middle 16:9 part of the screen)
+    extern int g_game_version;
+    bool totk_out = g_game_version == 143 && t->target == 1 && t->samples <= 1 && !(t->flags & 9) && t->width == 1920 &&
+                    t->height == 1080 && (t->format == 0x3f || t->format == 0x25);
+    if (totk_out) return RS_OUT;
     if ((t->target != 1 && t->target != 4) || t->samples > 1 || !(t->flags & 9) || t->width < 32 || t->height < 16) return RS_NONE;
     float a = (float)t->width / (float)t->height;
     if (a < 1.74f || a > 1.81f) return RS_NONE;
@@ -449,6 +447,21 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     uint32_t samples = t->samples > 1 ? t->samples : 1;
     if (samples > 1) levels = 1;
     VkFormat vf = mf.vf;
+    // A screen-sized D16 as 32-bit float. TOTK classifies its lighting tiles with an EQUAL test of a depth one pass
+    // writes as gl_FragDepth = material id against quads the lighting passes rasterise at that z (kuraeow/ultratears) -
+    // in a 16-bit UNORM buffer the two conversions may round apart on a non-Maxwell GPU: tiles the light skipped, black
+    // squares on the Great Sky Island's grass that followed Link, the grass near him unlit (2026-10-31, the user's
+    // recordings and a frame dump: every G-buffer layer right, the squares from the deferred lighting on; the same bug
+    // as Eden's Issue-Reports #492). A float buffer stores both exactly. Only the screen-sized (16:9) ones: with every
+    // D16 as float a shadow that walked with Link appeared - the 424x424 D16 shadow map around him, whose depth
+    // compares Vulkan clamps to [0,1] only for UNORM formats (what lies past its range came out shadowed).
+    // LARECOMP_VK_D16_AS_D32=0: none; =2: every D16.
+    if (t->format == 0x32) {
+        static int f32 = -1;
+        if (f32 < 0) f32 = !getenv("LARECOMP_VK_D16_AS_D32") ? 1 : atoi(getenv("LARECOMP_VK_D16_AS_D32"));
+        float a = (float)t->width / (float)(t->height ? t->height : 1);  // (its 1600x896 / 800x448; the maps: 400x400, 424x424)
+        if (f32 > 1 || (f32 && (b->rs_group != RS_NONE || (a > 1.74f && a < 1.81f)))) vf = VK_FORMAT_D32_SFLOAT;
+    }
     VkFormatFeatureFlags need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
     b->astc_bw = b->astc_bh = 0;
 #ifdef __ANDROID__
@@ -529,6 +542,13 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         depthfmt = false;
     }
     b->format = vf;
+    if (t->format == 0x32) {  // LARECOMP_LOG_D16=1: the D16 targets as made - which became float, at what scale
+        static int nlog, on = -1;
+        if (on < 0) on = getenv("LARECOMP_LOG_D16") != NULL;
+        if (on && nlog++ < 200)
+            LOG("[vk] D16 %p %ux%ux%u flags %#x group %u -> vk %d %ux%u\n", (void *)t, t->width, t->height, layers, t->flags,
+                b->rs_group, vf, tw, th);
+    }
     b->width = tw; b->height = th; b->depth = depth; b->layers = layers; b->levels = levels; b->samples = samples;
     b->aspect = depthfmt ? aspect_of(t->format) : VK_IMAGE_ASPECT_COLOR_BIT;
     b->base_type = type == VK_IMAGE_TYPE_1D ? (layers > 1 ? VK_IMAGE_VIEW_TYPE_1D_ARRAY : VK_IMAGE_VIEW_TYPE_1D)
@@ -798,6 +818,23 @@ static bool texture_unchanged(TexBackend *b, const uint8_t *mem, uint64_t size) 
     if (enabled < 0) { const char *e = getenv("LARECOMP_TEX_SNAPSHOTS"); enabled = !e || atoi(e) != 0; }
     if (!enabled || !size || size > (1u << 20)) return false;
     TextureSnapshot *e = &texture_snapshots[((uintptr_t)b >> 6) & 7];
+    {   // LARECOMP_LOG_TEX_SNAP=1 (diagnosis): every 2 s, the snapshot compares - same, changed, or the slot another's
+        static int on = -1;
+        static uint64_t n_same, n_changed, n_other, bytes, last;
+        if (on < 0) on = getenv("LARECOMP_LOG_TEX_SNAP") != NULL;
+        if (on) {
+            bool mine = e->owner == b && e->hash == b->data_hash && e->size == size;
+            if (!mine) n_other++; else if (!memcmp(e->bytes, mem, size)) n_same++; else n_changed++;
+            bytes += size;
+            uint64_t now = SDL_GetTicksNS();
+            if (now - last > 2000000000ull) {
+                last = now;
+                LOG("[texsnap] 2 s: %llu same, %llu changed, %llu slot taken by another; %.1f MB\n", (unsigned long long)n_same,
+                    (unsigned long long)n_changed, (unsigned long long)n_other, bytes / 1048576.0);
+                n_same = n_changed = n_other = bytes = 0;
+            }
+        }
+    }
     if (e->owner == b && e->hash == b->data_hash && e->size == size && !memcmp(e->bytes, mem, size)) return true;
     if (e->size != size) {
         uint8_t *next = realloc(e->bytes, size ? size : 1);
@@ -853,8 +890,10 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     static int always_full = -1;
     if (always_full < 0) always_full = getenv("LARECOMP_TEX_FULLHASH") ? 1 : 0;
     bool full = b->dynamic || !b->uploaded || always_full;
-    bool periodic = frame - b->full_frame >= 120 && full_hash_budget >= total;  // (safety net: a full hash now and then)
-    if (!full && periodic) { full = true; full_hash_budget -= total; }
+    // (safety net: a full hash now and then - one larger than the frame's budget too, as the frame's first: TOTK's
+    // 26 MB terrain atlas never fit it and a change its samples missed stayed unseen for 20 s)
+    bool periodic = frame - b->full_frame >= 120 && (full_hash_budget >= total || full_hash_budget == (4u << 20));
+    if (!full && periodic) { full = true; full_hash_budget = full_hash_budget > total ? full_hash_budget - total : 0; }
     bool identified_now = !b->tp;  // (button prompts / Hero Mode icon: re-uploaded when their look changes)
     if (identified_now) b->tp = texpatch_marker(t);
     bool restyle = b->tp > 0 && b->uploaded && b->tp_gen != texpatch_generation();
@@ -871,7 +910,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
             b->wgen = now;
             if (!ch && b->uploaded && !restyle) {
                 if (!periodic) { prof_tex_watch_skips++; return; }
-                if (b->dynamic) full_hash_budget -= total;  // (the others took theirs above)
+                if (b->dynamic) full_hash_budget = full_hash_budget > total ? full_hash_budget - total : 0;  // (the others took theirs above)
             }
         }
     }
