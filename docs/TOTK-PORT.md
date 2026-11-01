@@ -440,7 +440,36 @@ verde-azulada e só o Link tem luz.
 
 Atualização de 2026-10-30:
 - **Nuvens em blocos: corrigido** (`c193510`, TMML sem sinal).
-- **Paredes sem textura: aberto.** A névoa verde-azulada é a mesma do Switch, mas nas capturas do Switch
+- **Paredes sem textura e cenário sumindo nas cutscenes: corrigido** (renderização condicional do NVN,
+  `exec.c` `CMD_SET_RENDER_ENABLE_COND`). A causa e como foi achada:
+  - **A causa:** `nvnCommandBufferSetRenderEnableConditional` era uma operação vazia e `SetRenderEnable` nunca era
+    executado. O TOTK limpa os alvos temporários "no primeiro uso" (main+0x36da0) assim: por slot de textura há dois
+    reports de contador de 16 bytes; a CPU marca o primeiro com 1 e grava `SetRenderEnableConditional(modo 1 =
+    renderiza se diferente, slot)` + `ClearColor` + `SetRenderEnable(true)`, e um `ReportCounter` de timestamp no
+    slot logo depois (o valor volta a 0). Na GPU só o primeiro clear passa; os seguintes, gravados pela CPU antes de
+    a GPU rodar, são pulados. Sem a condição, o array de luz de meia resolução 800x448x2 (`t6` de `71c7ef99`,
+    `@35dd67e00`) era limpo 10 vezes por quadro, antes de cada grupo de luz e antes da leitura, em vez das 3 do
+    começo: a pedra ficava só com a ambiente fraca do cubemap e a névoa, e o fundo das cutscenes ficava preto.
+  - **A correção:** a condição avaliada ao executar a lista, em ordem com os `ReportCounter` (que o runtime grava
+    nesse mesmo momento): o valor de 64 bits de cada report, em +0 e em +16, como o Maxwell (yuzu
+    `ProcessQueryCondition`); modo 0 renderiza se iguais, 1 se diferentes. Enquanto desligado, draws e clears são
+    pulados. `LARECOMP_NO_RENDER_ENABLE=1`: o comportamento antigo; `LARECOMP_LOG_RENDER_ENABLE=1`: as avaliações.
+  - **Resultado** (save do usuário no lugar da 2ª captura, `android/out/cave-eden-before-after.png`, contra o Eden):
+    piso de pedra (38, 54, 51) -> (48, 62, 54), Eden (57, 72, 60); paredes (48, 72, 68) -> (54, 78, 70), Eden
+    (54, 85, 76); o vapor sobre a água e as plantas voltam. Clears de `t6` por quadro: 10 -> 3, como no Eden; clears
+    no quadro: 72 -> 40. 30 fps estáveis. A abertura de um jogo novo (`android/out/newgame-old-vs-fix.png`): sem a
+    correção o fundo dos closes da Zelda é preto; com ela, as paredes iluminadas pela tocha. O mergulho da Ilha do
+    Céu continua igual (`android/out/sky-re-sheet.png`).
+  - **A referência que resolveu:** o Eden no PC com o save do celular, capturado pelo RenderDoc 1.46 portátil
+    (`D:\RenderDoc_1.46_64`). No Vulkan o replay falha (`VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS`: os endereços de
+    buffer do Eden); no **OpenGL GLSL** funciona. Sem instalar a camada Vulkan (pede administrador):
+    `VK_ADD_IMPLICIT_LAYER_PATH` no ambiente e `renderdoccmd capture ... eden.exe -g <nsp>`. Scripts de análise
+    (`qrenderdoc --python`) e capturas em `D:\RenderDoc_captures`. O save do celular sai por uma cópia do app numa
+    pasta interna (`LARECOMP_SAVE_DIR=<files>/dbg/savepull` + `LARECOMP_SAVE_SEED`) e vai para
+    `%APPDATA%\eden\nand\user\save\0000000000000000\<perfil>\0100F2C0115B6000`.
+  - O histórico abaixo tem pistas falsas: o `t6` preto **não** era do jogo (o Eden o lê com luz, (0,131; 0,156;
+    0,088) na pedra), e a conclusão de que era "o esperado também no Switch" estava errada.
+  - Antes: a névoa verde-azulada é a mesma do Switch, mas nas capturas do Switch
   (`android/out/switch-ref/02.jpg`, `03.jpg`; comparação em `android/out/cave-vs-switch.png`) as paredes mostram os
   blocos de pedra, o musgo amarelo e a areia; aqui saem lisas, cinza-azuladas. A correção da água não muda isso.
   - **A cor base está certa:** `LARECOMP_DEBUG_RT=1` (o alvo 1 de cada passe, o sRGB do G-buffer) mostra a pedra
@@ -496,9 +525,11 @@ Atualização de 2026-10-30:
   - O cubemap `t7` vem, com alisamento temporal, de outro cubemap (`@3b5fe6200`, 64x64x6, 4 níveis): uma face
     por quadro é desenhada como mini-renderização do terreno (fs `246dde500`, hash `478b355ae8e7e8f1`, com o atlas
     1024x1024 `0x8e` e uma 96x96 `0x6`), depois os mips são filtrados.
-  - **Próximo:** sem referência dos buffers intermediários, cada hipótese é um chute. Uma captura do mesmo quadro
-    num emulador (RenderDoc no Ryujinx / Eden) diria qual está errado: o cubemap (escuro demais?) ou o peso dele.
-  - O usuário lembra do cenário que some nas cutscenes: pode ser a mesma luz faltando.
+  - A cor final de `71c7ef99`: (difusa do cubemap + especular) · `t3.w` + `t8`, depois uma mistura de saturação
+    com peso 0,2 + `t3.z` · `cb1[1].x`. Na pedra (`android/out/subst-t3/`): `t3.z` ≈ 0,46, `t3.w` ≈ 0,41, `t5` ≈
+    (1; 0,45; 1). Em valores absolutos, a difusa do cubemap fica em ~0,007 e `t8` em ~0,03.
+  - `LARECOMP_SCALE=1` (cena sem a escala 0,8): igual (`android/out/spot2-scale-cmp.png`).
+  - (Resolvido com a referência do Eden: acima.)
 - **Água escura: corrigido** (`precise gl_FragDepth`, abaixo). Antes: No Switch, o lago da ilha e as poças da caverna são verde-azulados; aqui saem quase
   pretos. O que se sabe (mergulho da Grande Ilha Celestial, `android/out/waterpick2*`):
   - **Como a água é desenhada:** no G-buffer (fs `d31be35c2ce14b2b`, prog `24887b000`, 8 alvos, profundidade escrita),
