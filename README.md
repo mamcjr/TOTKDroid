@@ -1,4 +1,4 @@
-# TOTKDroid
+⁹# TOTKDroid
 
 **English** | [Português](README.pt-BR.md)
 
