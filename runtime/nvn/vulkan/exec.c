@@ -41,6 +41,8 @@ static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wai
 static uint64_t stat_dchained;  // (dispatches with no barrier before them: dchain)
 static uint64_t stat_feedback_reads;  // (attachments sampled as they are: only read, resolve_feedback)
 static uint64_t stat_inplace_breaks;  // (passes ended so a draw reads a target the pass wrote: resolve_feedback)
+static uint64_t stat_store_none;      // (attachment tile stores avoided via VK_ATTACHMENT_STORE_OP_NONE)
+static int g_exec_depth;              // (current CMD_CALL recursion depth in exec_list)
 static uint64_t stat_upload_bytes;
 static uint64_t stat_cb_bytes[2], stat_cb_n[2], stat_cb_copied, stat_cbwin;  // (LARECOMP_LOG_CBUF_BYTES: game constant buffers bound,
                                                                  // fixed [0] / dynamically indexed [1], and bytes copied)
@@ -1963,12 +1965,12 @@ const char *renderer_stats(void) {
         LOG("\n");
     }
     snprintf(stats_text, sizeof stats_text,
-             "%llu draws, %llu skipped, %llu passes, %llu dispatches (%llu chained), %llu flushes, wait %.0fms, compile %d (waited %.0fms), fbcopy %llu (read %llu, breaks %llu), upload %.1fMB, binds %llu pipe %llu sets",
+             "%llu draws, %llu skipped, %llu passes, %llu dispatches (%llu chained), %llu flushes, wait %.0fms, compile %d (waited %.0fms), fbcopy %llu (read %llu, breaks %llu), snone %llu, upload %.1fMB, binds %llu pipe %llu sets",
              (unsigned long long)stat_draws, (unsigned long long)stat_skipped, (unsigned long long)stat_passes,
              (unsigned long long)stat_dispatches, (unsigned long long)stat_dchained, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
-             atomic_exchange(&stat_compiles, 0), (double)stat_build_wait_ns / 1e6, (unsigned long long)stat_feedback_copies, (unsigned long long)stat_feedback_reads, (unsigned long long)stat_inplace_breaks, (double)stat_upload_bytes / 1048576.0,
+             atomic_exchange(&stat_compiles, 0), (double)stat_build_wait_ns / 1e6, (unsigned long long)stat_feedback_copies, (unsigned long long)stat_feedback_reads, (unsigned long long)stat_inplace_breaks, (unsigned long long)stat_store_none, (double)stat_upload_bytes / 1048576.0,
              (unsigned long long)stat_pipe_binds, (unsigned long long)stat_set_binds);
-    stat_feedback_copies = stat_feedback_reads = stat_inplace_breaks = stat_upload_bytes = stat_build_wait_ns = stat_pipe_binds = stat_set_binds = 0;
+    stat_feedback_copies = stat_feedback_reads = stat_inplace_breaks = stat_store_none = stat_upload_bytes = stat_build_wait_ns = stat_pipe_binds = stat_set_binds = 0;
     up_log();
     if (getenv("LARECOMP_LOG_CBUF_BYTES")) {
         LOG("[cbuf] fixed %llu x %.1f KB, dynamic %llu x %.1f KB; copied %.1f MB; in place, patched %llu\n",
@@ -2880,6 +2882,103 @@ static void begin_pass(void) {
             }
         }
     }
+#ifdef __ANDROID__
+    // VK_KHR_load_store_op_none: scan forward in the recorded command list to find LOAD_OP_LOAD attachments that
+    // are never written during this pass (e.g. read-only depth testing in lighting / sky / decal passes).
+    // Mode 0: off. Mode 1 (default on Mali): depth/stencil read-only. Mode 2 (default on Mali-G925): color + depth/stencil.
+    // Override via LARECOMP_VK_STORE_NONE=0/1/2.
+    if (g_vk.store_op_none && g_cur_rec && ((const CmdRec *)g_cur_rec)->op != CMD_CLEAR_TEXTURE) {
+        static int snone_mode = -1;
+        if (snone_mode < 0) {
+            const char *se = getenv("LARECOMP_VK_STORE_NONE");
+            bool mali = g_vk.props.vendorID == 0x13B5;
+            bool mali_g925 = mali && strstr(g_vk.props.deviceName, "G925") != NULL;
+            snone_mode = se ? atoi(se) : (mali_g925 ? 2 : (mali ? 1 : 0));
+            if (snone_mode > 0)
+                LOG("[vk] STORE_OP_NONE mode %d (%s)\n", snone_mode, snone_mode >= 2 ? "color+depth" : "depth/stencil read-only");
+        }
+        if (snone_mode > 0) {
+            uint8_t lds[8];
+            memcpy(lds, st.ds, 8);
+            uint32_t lch = st.channel_mask;
+            uint32_t lsm[2] = {st.stencil_mask[0], st.stencil_mask[1]};
+            uint32_t wcolor = 0;
+            bool wdepth = false, wstencil = false, exact = true;
+            const CmdRec *q = (const CmdRec *)g_cur_rec;
+            for (int k = 0; k < 512; k++) {
+                if (!q || !q->size) break;
+                uint32_t op = q->op;
+                if (op == CMD_END) {
+                    if (g_exec_depth > 0) exact = false;  // sublist returns into the same open pass
+                    break;
+                }
+                if (op == CMD_DISPATCH || op == CMD_DISPATCH_INDIRECT || op == CMD_COPY_BUFFER_TO_TEXTURE ||
+                    op == CMD_COPY_TEXTURE_TO_BUFFER || op == CMD_COPY_TEXTURE_TO_TEXTURE || op == CMD_DOWNSAMPLE ||
+                    op == CMD_COPY_BUFFER_TO_BUFFER || op == CMD_CLEAR_TEXTURE || op == CMD_FENCE_SYNC)
+                    break;
+                if (op == CMD_CALL || op == CMD_JUMP || op == CMD_DRAW_TEXTURE ||
+                    op == CMD_DRAW_ARRAYS_INDIRECT || op == CMD_DRAW_ELEMENTS_INDIRECT ||
+                    op == CMD_DISCARD_DEPTH_STENCIL || op == CMD_RESOLVE_DEPTH) {
+                    exact = false;
+                    break;
+                }
+                if (op == CMD_SET_RENDER_TARGETS) {
+                    const struct { uint64_t tex[8]; NvnTextureView views[8]; uint8_t has_view[8]; uint64_t depth;
+                                   NvnTextureView dview; uint8_t has_dview; } *rt = (const void *)q->extra;
+                    int nc = (int)q->x[0] > 8 ? 8 : (int)q->x[0];
+                    bool same = nc == st.rt.ncolor && (NvnTexture *)(uintptr_t)rt->depth == st.rt.depth &&
+                                rt->has_dview == st.rt.has_dview &&
+                                (!rt->has_dview || !memcmp(&rt->dview, &st.rt.dview, sizeof rt->dview));
+                    for (int ci = 0; same && ci < nc; ci++) {
+                        same = (NvnTexture *)(uintptr_t)rt->tex[ci] == st.rt.color[ci] &&
+                               rt->has_view[ci] == st.rt.has_cview[ci] &&
+                               (!rt->has_view[ci] || !memcmp(&rt->views[ci], &st.rt.cview[ci], sizeof rt->views[ci]));
+                    }
+                    if (!same) break;
+                } else if (op == CMD_BIND_CHANNEL_MASK) {
+                    memcpy(&lch, q->extra, 4);
+                } else if (op == CMD_BIND_DEPTH_STENCIL) {
+                    memcpy(lds, q->extra, 8);
+                } else if (op == CMD_SET_STENCIL && q->x[6] == 1) {
+                    int face = (int)q->x[0];
+                    if (face & 1) lsm[0] = (uint32_t)q->x[1];
+                    if (face & 2) lsm[1] = (uint32_t)q->x[1];
+                } else if (op == CMD_CLEAR_COLOR) {
+                    int idx = (int)q->x[0];
+                    if (idx >= 0 && idx < 8) wcolor |= 1u << idx;
+                } else if (op == CMD_CLEAR_DEPTH_STENCIL) {
+                    if (q->x[0]) wdepth = true;
+                    if (q->x[2]) wstencil = true;
+                } else if (op == CMD_DRAW_ARRAYS || op == CMD_DRAW_ELEMENTS) {
+                    for (uint32_t ci = 0; ci < pass_ncolor; ci++)
+                        if ((lch >> (ci * 4)) & 0xF) wcolor |= 1u << ci;
+                    if (lds[0] && lds[1]) wdepth = true;
+                    if (lds[3] && ((lsm[0] | lsm[1]) & 0xFF)) wstencil = true;
+                }
+                if (k == 511) exact = false;
+                q = (const CmdRec *)((const uint8_t *)q + q->size);
+            }
+            if (exact) {
+                if (snone_mode >= 2) {
+                    for (uint32_t ci = 0; ci < pass_ncolor; ci++) {
+                        if (ca[ci].imageView && ca[ci].loadOp == VK_ATTACHMENT_LOAD_OP_LOAD && !(wcolor & (1u << ci))) {
+                            ca[ci].storeOp = VK_ATTACHMENT_STORE_OP_NONE;
+                            stat_store_none++;
+                        }
+                    }
+                }
+                if (has_d && da.loadOp == VK_ATTACHMENT_LOAD_OP_LOAD && !wdepth) {
+                    da.storeOp = VK_ATTACHMENT_STORE_OP_NONE;
+                    stat_store_none++;
+                }
+                if (has_s && sa.loadOp == VK_ATTACHMENT_LOAD_OP_LOAD && !wstencil) {
+                    sa.storeOp = VK_ATTACHMENT_STORE_OP_NONE;
+                    stat_store_none++;
+                }
+            }
+        }
+    }
+#endif
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {minw, minh}}, .layerCount = 1,
                           .colorAttachmentCount = pass_ncolor, .pColorAttachments = ca,
                           .pDepthAttachment = has_d ? &da : NULL, .pStencilAttachment = has_s ? &sa : NULL};
@@ -9517,6 +9616,8 @@ static bool render_enable_on(void) {
 }
 
 static void exec_list(uint64_t handle, int depth) {
+    int prev_depth = g_exec_depth;
+    g_exec_depth = depth;
     uint64_t p = handle;
     for (int guard = 0; guard < 10000000; guard++) {
         CmdRec *r = (CmdRec *)(uintptr_t)p;
@@ -9560,7 +9661,7 @@ static void exec_list(uint64_t handle, int depth) {
                     r->x[0] == 0 ? "equal" : "not equal", (unsigned long long)v[0], (unsigned long long)v[2], render_off ? "off" : "on");
             break;
         }
-        case CMD_END: return;
+        case CMD_END: g_exec_depth = prev_depth; return;
         case CMD_JUMP: p = r->x[0]; continue;
         case CMD_CALL: {
             const uint64_t *h = x;

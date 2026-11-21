@@ -502,7 +502,7 @@ static void create_device(void) {
 #undef QUERY_OPTIONAL
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &optional);
 #endif
-    const char *ext[32];
+    const char *ext[64];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
 #ifdef __ANDROID__
@@ -615,6 +615,15 @@ static void create_device(void) {
     if (g_vk.map_placed) {
         ext[n_ext++] = VK_KHR_MAP_MEMORY_2_EXTENSION_NAME;
         ext[n_ext++] = VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME;
+    }
+    if (!env_on("LARECOMP_VK_NO_STORE_NONE")) {
+        if (has_ext(ep, ne, VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME)) {
+            g_vk.store_op_none = true;
+            ext[n_ext++] = VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME;
+        } else if (has_ext(ep, ne, VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME)) {
+            g_vk.store_op_none = true;
+            ext[n_ext++] = VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME;
+        }
     }
 #endif
     free(ep);
