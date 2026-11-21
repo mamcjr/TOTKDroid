@@ -42,16 +42,18 @@ static uint64_t mix(uint64_t h, uint64_t v) { return (h ^ v) * 0x100000001b3ull;
 
 static VkRenderPass make_rp(const RpKey *k) {
     VkAttachmentDescription a[FB_VIEWS];
-    VkAttachmentReference cr[8], dr = {VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_GENERAL};
+    VkAttachmentReference cr[8], ir[8], dr = {VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_GENERAL};
     uint32_t n = 0;
     for (uint32_t i = 0; i < k->ncolor; i++) {
         cr[i] = (VkAttachmentReference){VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_GENERAL};
+        ir[i] = cr[i];
         if (k->color[i] == VK_FORMAT_UNDEFINED) continue;
         a[n] = (VkAttachmentDescription){.format = k->color[i], .samples = k->samples, .loadOp = k->load[i],
                                          .storeOp = k->store[i], .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
                                          .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
                                          .initialLayout = k->layout[i], .finalLayout = k->layout[i]};
         cr[i] = (VkAttachmentReference){n++, k->layout[i]};
+        ir[i] = cr[i];
     }
     if (k->ds != VK_FORMAT_UNDEFINED) {
         a[n] = (VkAttachmentDescription){.format = k->ds, .samples = k->samples,
@@ -64,14 +66,19 @@ static VkRenderPass make_rp(const RpKey *k) {
     }
     VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = k->ncolor,
                                .pColorAttachments = cr, .pDepthStencilAttachment = &dr};
+    if (vk_roaa_for(k->ncolor) && g_vk.roaa_color && k->ncolor) {
+        sp.flags |= VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_COLOR_ACCESS_BIT_EXT;
+        sp.inputAttachmentCount = k->ncolor;
+        sp.pInputAttachments = ir;
+    }
     // (a barrier inside the pass needs one: the attachments' writes to the fragment work after them, per region)
     const VkPipelineStageFlags fb_stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
                                            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     VkSubpassDependency dep = {.srcSubpass = 0, .dstSubpass = 0, .srcStageMask = fb_stages, .dstStageMask = fb_stages,
                                .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                               .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-                                                VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                                                VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                               .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INPUT_ATTACHMENT_READ_BIT |
+                                                VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                                                VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                                .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT};
     VkRenderPassCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = n, .pAttachments = a,
                                  .subpassCount = 1, .pSubpasses = &sp, .dependencyCount = 1, .pDependencies = &dep};
@@ -248,12 +255,19 @@ void vk_begin_rendering(VkCommandBuffer cb, const VkRenderingInfo *ri, const VkF
         views[nv++] = a->imageView;
     }
     uint32_t w = ri->renderArea.offset.x + ri->renderArea.extent.width, h = ri->renderArea.offset.y + ri->renderArea.extent.height;
+    if (!cb || !w || !h) { begun = false; return; }
+    if (begun) {
+        static int nested_warn;
+        if (nested_warn++ < 8) LOG("[vk] rpcompat: ending nested active render pass before vk_begin_rendering\n");
+        vkCmdEndRenderPass(cb);
+        begun = false;
+    }
     pthread_mutex_lock(&lock);
     VkRenderPass rp = get_rp(&k);
     VkFramebuffer fb = rp ? get_fb(rp, views, nv, w, h) : VK_NULL_HANDLE;
     pthread_mutex_unlock(&lock);
     begun = fb != VK_NULL_HANDLE;
-    if (!fb) return;  // (logged: the draws until vk_end_rendering are recorded outside a pass, and fail)
+    if (!rp || !fb) { begun = false; return; }  // (logged: the draws until vk_end_rendering are recorded outside a pass, and fail)
     VkRenderPassBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
                                 .renderArea = ri->renderArea, .clearValueCount = nv, .pClearValues = clears};
     vkCmdBeginRenderPass(cb, &bi, VK_SUBPASS_CONTENTS_INLINE);

@@ -1296,9 +1296,10 @@ VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout) {
             VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 32768}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4096},
                                             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 32768},
                                             {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1024}, {VK_DESCRIPTOR_TYPE_SAMPLER, 1024},
-                                            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 32768}};
+                                            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 32768},
+                                            {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 8192}};
             VkDescriptorPoolCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 8192,
-                                             .poolSizeCount = 6, .pPoolSizes = sizes};
+                                             .poolSizeCount = 7, .pPoolSizes = sizes};
             VK_CHECK(vkCreateDescriptorPool(g_vk.dev, &ci, NULL, &s->pools[s->npools++]));
         }
         VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -2135,6 +2136,7 @@ static uint32_t tex_wh[2][64][2];
 
 // ================================================================== render passes
 static VkFormat pass_color[8], pass_depth, pass_stencil;
+static VkImageView pass_color_view[8];
 static uint32_t pass_ncolor, pass_samples = 1, pass_w, pass_h;
 static bool pass_noatt;
 static int debug_pass_no;
@@ -2715,6 +2717,7 @@ static void begin_pass(void) {
         NvnTexture *t = st.rt.color[i];
         ca[i] = (VkRenderingAttachmentInfo){.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         pass_color[i] = VK_FORMAT_UNDEFINED;
+        pass_color_view[i] = VK_NULL_HANDLE;
         if (!t) continue;
         uint32_t lv = st.rt.has_cview[i] && (st.rt.cview[i].setmask & 1) ? st.rt.cview[i].base_level : 0;
         if (lv) vk_tex_upload_for_mips(t);
@@ -2756,6 +2759,7 @@ static void begin_pass(void) {
             ca[i].clearValue.color.float32[3] = fresh ? 0.0f : 1.0f;
         }
         pass_color[i] = vf;
+        pass_color_view[i] = v;
         bool wb_view_ok = !(st.rt.has_cview[i] && ((st.rt.cview[i].setmask & ~3u) || st.rt.cview[i].min_layer));
         if ((wb_eligible(t, b, lv) || wb_level_eligible(t, b, lv)) && wb_view_ok)
             wb_pass_lv[wb_npass] = lv, wb_pass[wb_npass++] = t;  // (a view of one level, layer 0)
@@ -2795,6 +2799,7 @@ static void begin_pass(void) {
             int drop = wj || !wi ? i : j;
             ca[drop].imageView = VK_NULL_HANDLE;
             pass_color[drop] = VK_FORMAT_UNDEFINED;
+            pass_color_view[drop] = VK_NULL_HANDLE;
             pass_dup_null |= 1u << drop;
         }
     pass_depth = pass_stencil = VK_FORMAT_UNDEFINED;
@@ -3302,7 +3307,7 @@ static void descriptor_plan(const VkBindingInfo *binds, int count, uint32_t set,
     for (int i = 0; i < count; i++) {
         const VkBindingInfo *b = &binds[i];
         if (b->set != set) continue;
-        if ((b->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && b->binding >= 32) ||
+        if (((b->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || b->type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) && b->binding >= 32) ||
             (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && b->binding < 17) || b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
             plan->regular[plan->nregular++] = (uint8_t)i;
         else if (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER &&
@@ -3329,6 +3334,10 @@ typedef struct {
                            // ShaderInfo it sits 1.4 KB in, past the 64 textures - a cache miss each draw, ~7% of the
                            // render thread on the POCO F7 Ultra: draw_writes)
     uint8_t fs_gather;  // (up_fix) the fragment stage's first gathered texture: 0 not looked yet, 1 none, 2 + its slot
+    void *fetch_prog;   // cached 1-entry subpassLoad variant of this program (when fb_fetch_cand_mask matches RTs)
+    uint16_t fetch_mask;
+    uint8_t fetch_ncolor;
+    uint8_t fetch_att[16];
     _Atomic int state;  // 0 building, 1 ready, 2 failed
     uint8_t evict;      // (prog_evict, vk_exec_reset) 1: to be freed, 2: kept - a pipeline of its still building
     uint32_t used_s;    // when a draw last used it (g_exec_s), and that submission (prog_evict)
@@ -3475,6 +3484,8 @@ static bool qcom_no_switch(void) {
 static bool cbwin_wanted(void);  // (below gmem_placed)
 #endif
 
+#include "fb_fetch_analyze.h"
+
 static void translate_program(void *arg) {
     Prog *p = arg;
     pthread_mutex_lock(&translate_lock);
@@ -3547,6 +3558,8 @@ static void translate_program(void *arg) {
     subst_glsl(p->fi, p->code[1], "fs");
 #endif
     p->vs_uses_vid = strstr(p->vi->msl, "gl_VertexIndex") != NULL;
+    if (!p->fkey.fb_fetch_mask && p->fi)
+        p->fi->fb_fetch_cand_mask = analyze_1to1_gbuf_slots(p->vi->msl, p->fi->msl, p->vkey.flip_y != 0, p->vkey.flip_x != 0);
     if (p->vi->writes_layer) {  // (diagnosis: a layered draw - into a 3D or array target - lands in one slice here)
         static int n;
         if (n++ < 20) LOG("[shader] vertex shader %llx writes the layer / viewport index: dropped\n", (unsigned long long)p->code[0]);
@@ -3581,6 +3594,11 @@ static Prog *get_program(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     for (int i = 0; i < 2; i++) { uint64_t a = np->stages[i].code_addr; for (int k = 0; k < 8; k++) { h ^= (a >> (k * 8)) & 0xFF; h *= 0x100000001B3ull; } }
     h = hash_words(h, vkey, sizeof *vkey);  // (8 bytes a step: the table is in memory only)
     for (int i = 0; i < 8; i++) { h ^= fkey->rt_kind[i]; h *= 0x100000001B3ull; }
+    if (fkey->fb_fetch_mask) {
+        h ^= fkey->fb_fetch_mask | 0xF0000u; h *= 0x100000001B3ull;
+        for (int i = 0; i < 16; i++)
+            if (fkey->fb_fetch_mask & (1u << i)) { h ^= fkey->fb_fetch_att[i]; h *= 0x100000001B3ull; }
+    }
 #ifdef __ANDROID__
     if (fkey->no_ds_write) { h ^= 0xE1; h *= 0x100000001B3ull; }  // (keys without it hash as before)
 #endif
@@ -3832,9 +3850,30 @@ typedef struct {
     uint8_t blend[8][8];
     uint8_t blend_on, a2c, topo_class, poly_fill, depth_clamp;
     uint8_t prim_restart;  // (no extended dynamic state 2 only: primitive restart is pipeline state then)
+    uint8_t roaa_color;    // selective ROAA: set only on subpassLoad framebuffer-fetch pipelines (keeps Mali FPK on others)
     uint32_t write_mask[8];
     PipeFx fx;
 } PipeKey;
+
+static bool vk_fb_fetch_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("LARECOMP_VK_FB_FETCH");
+        bool mali = g_vk.props.vendorID == 0x13B5;
+        on = (e ? atoi(e) != 0 : mali) && !g_vk.dyn_render && vk_roaa_on() && g_vk.roaa_color;
+        if (on) LOG("[vk] framebuffer fetch (subpassLoad + selective ROAA): on\n");
+    }
+    return on != 0;
+}
+
+static bool vk_selective_roaa_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("LARECOMP_VK_SELECTIVE_ROAA");
+        on = e ? atoi(e) != 0 : 1;
+    }
+    return on != 0;
+}
 
 typedef struct {
     PipeKey k;
@@ -3990,6 +4029,10 @@ static void prog_evict(void) {
             if (p && p->evict) { if (marked < want) marked++; else p->evict = 0; }
         }
         if (!marked) continue;
+        for (size_t i = 0; i < prog_cache.capacity; i++) {
+            Prog *p = prog_cache.entries[i].object;
+            if (p && p->fetch_prog && ((Prog *)p->fetch_prog)->evict) p->fetch_prog = NULL;
+        }
         size_t np = pipe_cache.count;
         cache_drop(&pipe_cache, pipe_gone);
         fpipes += (int)(np - pipe_cache.count);
@@ -4066,8 +4109,11 @@ static void build_pipeline(void *arg) {
             cba[i].alphaBlendOp = blend_op(b[6]);
         }
     }
+    VkRenderPass crp = vk_rp_compat(k->ncolor, k->color, k->depth, k->stencil, ms.rasterizationSamples);
     VkPipelineColorBlendStateCreateInfo cb = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                               .attachmentCount = k->ncolor, .pAttachments = cba};
+    if (crp && vk_roaa_for(k->ncolor) && g_vk.roaa_color && k->ncolor && (!vk_selective_roaa_on() || k->roaa_color))
+        cb.flags |= VK_PIPELINE_COLOR_BLEND_STATE_CREATE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_BIT_EXT;
     VkPipelineDynamicStateCreateInfo dy = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                            .dynamicStateCount = NDYN, .pDynamicStates = DYN};
     if (k->fx.on) {  // (no extended dynamic state: the draw's own, PipeFx)
@@ -4089,10 +4135,7 @@ static void build_pipeline(void *arg) {
                                        .pStages = stages, .pVertexInputState = &vi, .pInputAssemblyState = &ia, .pViewportState = &vs,
                                        .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = &ds,
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = k->prog->layout};
-    {   // (no dynamic rendering: against a compatible render pass, rpcompat.c)
-        VkRenderPass crp = vk_rp_compat(k->ncolor, k->color, k->depth, k->stencil, ms.rasterizationSamples);
-        if (crp) pi.pNext = ri.pNext, pi.renderPass = crp;
-    }
+    if (crp) pi.pNext = ri.pNext, pi.renderPass = crp;
 #ifdef __ANDROID__
     if (g_vk.exec_stats) pi.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
     {   // LARECOMP_LOG_PIPE=1: each pipeline's shaders before the driver compiles them (a crash in its compiler: the
@@ -4251,6 +4294,35 @@ static bool is_attachment_entry(const NvnTexEntry *e) {
     for (int i = 0; i < st.rt.ncolor; i++)
         if (e->tex == st.rt.color[i] && view_overlaps_rt(e, &st.rt.cview[i], st.rt.has_cview[i] != 0)) return true;
     return false;
+}
+
+// A sampled texture whose lookup a subpassLoad of colour target k returns unchanged (framebuffer fetch):
+// single level 0, single layer 0, same format, no forced-alpha/channel remap, and identity swizzle on stored channels.
+static bool fetch_entry_exact(const NvnTexEntry *e, int k) {
+    const NvnTexture *t = e->tex;
+    if (!t || t->samples > 1 || st.rt.color[k] != t) return false;
+    if (!view_overlaps_rt(e, &st.rt.cview[k], st.rt.has_cview[k] != 0)) return false;
+    bool hv = e->has_view;
+    uint32_t lv0 = hv && (e->view.setmask & 1) ? e->view.base_level : 0;
+    uint32_t nlv = hv && (e->view.setmask & 1) && e->view.num_levels ? e->view.num_levels : (t->levels > lv0 ? t->levels - lv0 : 1);
+    uint32_t ly0 = hv && (e->view.setmask & 2) ? e->view.min_layer : 0;
+    if (lv0 != 0 || nlv != 1 || ly0 != 0) return false;
+    uint32_t ef = hv && (e->view.setmask & 4) ? e->view.format : t->format;
+    if (ef != rt_format(k) || !vk_format_view_exact(ef)) return false;
+    const uint8_t *sw = hv && (e->view.setmask & 8) ? e->view.swizzle : t->swizzle;
+    uint8_t c[4];
+    for (int i = 0; i < 4; i++) c[i] = sw[i] <= 5 ? sw[i] : (uint8_t)(2 + i);
+    if (!(c[0] || c[1] || c[2] || c[3])) return true;
+    // Vulkan subpassLoad() on an IDENTITY-swizzled input attachment fills omitted channels with
+    // G=0, B=0, A=1 (e.g. B10G11R11_UFLOAT 0x3F -> {R,G,B,1}, R32_SFLOAT 0x0A -> {R,0,0,1}).
+    int nc = vk_format_components(ef);
+    for (int i = 0; i < 4; i++) {
+        uint8_t expect = (uint8_t)(2 + i);
+        if (c[i] == expect) continue;
+        if (i >= nc && c[i] == (i == 3 ? 1u : 0u)) continue;
+        return false;
+    }
+    return true;
 }
 
 static TexBackend *snapshot_image(NvnTexture *t, TexBackend *src) {
@@ -4653,6 +4725,14 @@ static void resolve_feedback(Prog *pr, uint32_t draw_written) {
                 }
                 extern int vk_ab(const char *what);
                 if (!g_inplace_copy && bit && bit < 1u << 8 && AB("copy") != 1) {
+                    if (sg == 1 && i < 16 && (pr->fkey.fb_fetch_mask & (1u << i)) &&
+                        !g_vk.dyn_render && g_vk.roaa_color && vk_roaa_for((uint32_t)st.rt.ncolor)) {
+                        int att = pr->fkey.fb_fetch_att[i] & 7;
+                        if (att < st.rt.ncolor && st.rt.color[att] == t) {
+                            stat_feedback_reads++;
+                            continue;
+                        }
+                    }
                     int si = -1;
                     for (int k = 0; k < 8; k++) if (snap_tex[k] == t) si = k;
                     if (si < 0 || !snap_ok[si]) {
@@ -7191,7 +7271,17 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
         if (b->set != set) continue;
         w[n] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = b->binding,
                                       .descriptorCount = 1, .descriptorType = b->type};
-        if (b->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && b->binding >= 32) {
+        if (b->type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT && b->binding >= 32) {
+            int ti = (int)b->binding - 32;
+            int att = ti < 16 ? (p->fkey.fb_fetch_att[ti] & 7) : 0;
+            VkImageView iv = (att < (int)pass_ncolor && pass_color_view[att]) ? pass_color_view[att] : vk_dummy_view(TEXTYPE_2D);
+            ii[n] = (VkDescriptorImageInfo){VK_NULL_HANDLE, iv, VK_IMAGE_LAYOUT_GENERAL};
+            if (ti < 64) {
+                tex_sc[sg][ti][0] = pass_sx; tex_sc[sg][ti][1] = pass_sy;
+                tex_wh[sg][ti][0] = pass_w; tex_wh[sg][ti][1] = pass_h;
+            }
+            w[n].pImageInfo = &ii[n];
+        } else if (b->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && b->binding >= 32) {
             int ti = (int)b->binding - 32;
             float sc[2]; uint32_t wh[2];
             if (ti < si->ntex && pre_ii && ti < 64) { ii[n] = pre_ii[ti]; sc[0] = tex_sc[sg][ti][0]; sc[1] = tex_sc[sg][ti][1]; wh[0] = tex_wh[sg][ti][0]; wh[1] = tex_wh[sg][ti][1]; }
@@ -7798,6 +7888,53 @@ static void draw_(CmdRec *r, bool indexed) {
     }
     if (pr && keep) wait_built(&pr->state);
     if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; skip_note("shader"); return; }
+    // Automatic statically-proven 1:1 framebuffer fetch (subpassLoad + selective ROAA):
+    // When VS+FS were proven to sample texture slot(s) at exact 1:1 current pixel (fb_fetch_cand_mask) and
+    // those slots bind active color attachment(s) without remapping/swizzle, switch to the subpassLoad variant.
+    if (pr->fi->fb_fetch_cand_mask && vk_fb_fetch_on() && vk_roaa_for((uint32_t)st.rt.ncolor) &&
+        (!in_pass || st.rt_dirty || pass_samples == 1)) {
+        static int copy_env = -1;
+        if (copy_env < 0) copy_env = getenv("LARECOMP_FEEDBACK_COPY") != NULL;
+        if (!copy_env && g_inplace_copy <= 0) {
+            uint16_t fm = 0;
+            uint8_t fatt[16] = {0};
+            uint16_t cand = pr->fi->fb_fetch_cand_mask;
+            for (int ti = 0; ti < 16 && ti < pr->fi->ntex; ti++) {
+                if (!(cand & (1u << ti))) continue;
+                NvnTexEntry *e = shader_texture_entry(1, &pr->fi->tex[ti]);
+                if (!is_attachment_entry(e)) continue;
+                NvnTexture *t = e->tex;
+                int att = -1, cnt = 0;
+                for (int k = 0; k < st.rt.ncolor; k++)
+                    if (st.rt.color[k] == t) { att = k; cnt++; }
+                if (cnt == 1 && att >= 0 && fetch_entry_exact(e, att) &&
+                    !(in_pass && !st.rt_dirty && (pass_dup_null & (1u << att)))) {
+                    fm |= (uint16_t)(1u << ti);
+                    fatt[ti] = (uint8_t)att;
+                }
+            }
+            if (fm) {
+                Prog *fp = NULL;
+                if (pr->fetch_prog && pr->fetch_mask == fm && pr->fetch_ncolor == (uint8_t)st.rt.ncolor &&
+                    !memcmp(pr->fetch_att, fatt, 16)) {
+                    fp = (Prog *)pr->fetch_prog;
+                } else {
+                    ShaderKey ffk = fkey;
+                    ffk.fb_fetch_mask = fm;
+                    memcpy(ffk.fb_fetch_att, fatt, 16);
+                    fp = get_program(st.program, &vkey, &ffk);
+                    if (fp && keep) wait_built(&fp->state);
+                    if (fp && atomic_load(&fp->state) == 1) {
+                        pr->fetch_prog = fp;
+                        pr->fetch_mask = fm;
+                        pr->fetch_ncolor = (uint8_t)st.rt.ncolor;
+                        memcpy(pr->fetch_att, fatt, 16);
+                    }
+                }
+                if (fp && atomic_load(&fp->state) == 1) pr = fp;
+            }
+        }
+    }
     {   // fragment-shader hash: interior backdrop detection (widescreen), skip lists, item twinkle (renderer.m)
         static uint64_t last_fs, last_hash;
         uint64_t fs = st.program->stages[1].code_addr;
@@ -8150,6 +8287,7 @@ static void draw_(CmdRec *r, bool indexed) {
         memset(&k, 0, sizeof k);
         k.prog = pr;
         k.prim_restart = pre_key;
+        k.roaa_color = pr->fkey.fb_fetch_mask != 0 ? 1 : 0;
         k.fx = fx;
         k.ncolor = pass_ncolor;
         memcpy(k.color, pass_color, sizeof k.color);

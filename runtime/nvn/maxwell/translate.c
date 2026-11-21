@@ -648,6 +648,14 @@ static const char *alayer(Ctx *c, const char *r, int slot, char *buf) {
 static void glsl_sample(Ctx *c, char *out, int slot, const char *const *co, const char *layer, const char *dref,
                         int lod_kind, const char *lod, const char *off) {
     if (c->fail) { strcpy(out, "vec4(0.0f)"); return; }  // e.g. a type conflict: tex[slot] is not this lookup's type
+    if (c->stage == STAGE_FRAGMENT && c->key && slot >= 0 && slot < 16 && (c->key->fb_fetch_mask & (1u << slot))) {
+        int att = c->key->fb_fetch_att[slot] & 7;
+        int kind = c->key->rt_kind[att];
+        if (kind == 1) sprintf(out, "intBitsToFloat(subpassLoad(t%d))", slot);
+        else if (kind == 2) sprintf(out, "uintBitsToFloat(subpassLoad(t%d))", slot);
+        else sprintf(out, "subpassLoad(t%d)", slot);
+        return;
+    }
     const ShaderTexture *t = &c->info->tex[slot];
     int type = t->type;
     bool cube = type == TEXTYPE_CUBE || type == TEXTYPE_CUBE_ARRAY;
@@ -3382,6 +3390,13 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     }
     for (int i = 0; i < info->ntex; i++) {
         ShaderTexture *t = &info->tex[i];
+        if (stage == STAGE_FRAGMENT && key && i < 16 && (key->fb_fetch_mask & (1u << i))) {
+            int att = key->fb_fetch_att[i] & 7;
+            int kind = key->rt_kind[att];
+            const char *iat = kind == 1 ? "isubpassInput" : kind == 2 ? "usubpassInput" : "subpassInput";
+            sp(&s, "layout(input_attachment_index = %d, set = %d, binding = %d) uniform %s t%d;\n", att, set, 32 + i, iat, i);
+            continue;
+        }
         sp(&s, "layout(set = %d, binding = %d) uniform %s t%d;\n", set, 32 + i, glsl_sampler_type(t), i);
         // size of level l as (width, height, depth or layers)
         switch (t->type) {
