@@ -54,6 +54,8 @@ typedef struct {
     unsigned subgroup_stages;  // (1 << STAGE_*) the stages whose shaders may use subgroup operations (device.c)
     bool null_desc, shader_float16;  // (TOTK_LSFG) VK_EXT_robustness2's null descriptors and 16-bit floats on (framegen.c)
     bool dyn_render;              // VK_KHR_dynamic_rendering in use; without it, classic render passes (rpcompat.c)
+    bool roaa_color, roaa_depth, roaa_stencil;  // VK_EXT_rasterization_order_attachment_access supported & enabled
+    bool store_op_none;           // VK_KHR_load_store_op_none / VK_EXT_load_store_op_none (skip read-only tile stores)
     bool sync2;                   // synchronization2 in use; without it, Vulkan 1.0 barriers (device.c sync1_*)
     bool eds;                     // extended dynamic state in use; without it, those states (and extended dynamic state
                                   // 2's) baked into pipelines (exec.c PipeKey.fx)
@@ -158,6 +160,8 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render);  // backend image (uploads C
 void vk_tex_upload_for_mips(NvnTexture *t);  // (drawn into at a level past 0: the CPU's contents first, if never uploaded)
 VkFormat vk_format(uint32_t nvn_format);
 bool vk_format_alpha_one(uint32_t nvn_format);
+bool vk_format_view_exact(uint32_t nvn_format);
+int vk_format_components(uint32_t nvn_format);
 bool renderer_texture_scalable(NvnTexture *t);
 uint8_t vk_texture_scale_group(NvnTexture *t);
 void vk_make_scalable_like(NvnTexture *t, NvnTexture *like);  // (a pass's attachment the size of a scaled one)
@@ -191,4 +195,7 @@ VkShaderModule vk_compile_glsl(const char *src, int stage, const char *name);  /
 VkShaderModule vk_builtin_shader(const char *name);  // internal shaders (clear, copy, present)
 
 // ---- device / window (device.c)
+int vk_roaa_mode(void);
+bool vk_roaa_on(void);
+bool vk_roaa_for(uint32_t ncolor);
 void vk_save_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h);

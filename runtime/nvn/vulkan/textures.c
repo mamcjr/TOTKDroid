@@ -165,6 +165,15 @@ bool renderer_format_is_depth(uint32_t f) { return f >= 0x31 && f <= 0x36; }
 bool renderer_format_has_stencil(uint32_t f) { return f == 0x31 || f == 0x35 || f == 0x36; }
 VkFormat vk_format(uint32_t f) { return fmt_of(f).vf; }
 bool vk_format_alpha_one(uint32_t f) { return fmt_of(f).alpha_one; }
+// True when sampling reads the exact same channels as a subpassLoad() of its attachment view.
+bool vk_format_view_exact(uint32_t f) { VkFmt m = fmt_of(f); return !m.alpha_one && !m.chan[0] && !m.expand_rgb; }
+// Number of stored color channels in the Vulkan image format (missing G/B read as 0.0, missing A reads as 1.0).
+int vk_format_components(uint32_t f) {
+    if (f >= 0x01 && f <= 0x0C) return 1;
+    if (f >= 0x0D && f <= 0x18) return 2;
+    if (f == 0x3F || f == 0x40) return 3;
+    return 4;
+}
 bool renderer_format_alpha_one(uint32_t f) { return fmt_of(f).alpha_one; }
 
 static VkImageAspectFlags aspect_of(uint32_t f) {
@@ -536,7 +545,12 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     bool depthfmt = renderer_format_is_depth(t->format);
     VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (depthfmt) usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-    else if (format_supports(vf, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    else if (format_supports(vf, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) {
+        usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        static int ia_usage = -1;
+        if (ia_usage < 0) ia_usage = getenv("LARECOMP_VK_NO_IA_USAGE") == NULL && vk_roaa_on();
+        if (ia_usage) usage |= VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+    }
     VkImageCreateFlags flags = 0;
     static int no_mut = -1;  // (LARECOMP_VK_NO_MUTABLE=1, a measurement: render targets without it - Turnip's UBWC)
     if (no_mut < 0) no_mut = getenv("LARECOMP_VK_NO_MUTABLE") != NULL;
