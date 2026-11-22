@@ -177,6 +177,11 @@ static inline void rpCmdBindPipeline(VkCommandBuffer cb, VkPipelineBindPoint bp,
     p[2] = (uint64_t)(uintptr_t)pipe;
     rp_publish(3);
 }
+static inline void rpCmdSetVertexInputEXT(VkCommandBuffer cb, uint32_t nb, const VkVertexInputBindingDescription2EXT *b,
+                                          uint32_t na, const VkVertexInputAttributeDescription2EXT *a) {
+    if (rp_on) vk_rp_drain();
+    vkCmdSetVertexInputEXT(cb, nb, b, na, a);
+}
 // (header aux: first set | count << 8 | bind point << 12; value: the dynamic offsets' count)
 static inline void rpCmdBindDescriptorSets(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout layout, uint32_t first,
                                            uint32_t nsets, const VkDescriptorSet *sets, uint32_t ndyn, const uint32_t *dyn) {
@@ -354,6 +359,7 @@ static inline int vk_rp_tid(void) { return 0; }
 #define rpCmdSetViewport vkCmdSetViewport
 #define rpCmdSetScissor vkCmdSetScissor
 #define rpCmdBindPipeline vkCmdBindPipeline
+#define rpCmdSetVertexInputEXT vkCmdSetVertexInputEXT
 #define rpCmdBindDescriptorSets vkCmdBindDescriptorSets
 #define rpCmdBindIndexBuffer vkCmdBindIndexBuffer
 #define rpCmdBindVertexBuffers vkCmdBindVertexBuffers

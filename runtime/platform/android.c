@@ -979,6 +979,26 @@ void plat_thread_unpin(void) {
 // limit, on a prime core. The 8 Elite's cores are one design, only the clocks differ. Only while the prime cores are
 // held below the others; otherwise the thread may run anywhere, as before. LARECOMP_FOLLOW_CLOCK=0: off;
 // LARECOMP_AB=<frames>:followclk alternates it (side 0: anywhere).
+// Cached render-thread affinity mask from plat_render_follow_clock(), re-applied if an OEM ADPF
+// driver (e.g. ColorOS) resets cpus_allowed back to all cores after reportActualWorkDuration/setThreads.
+static pthread_mutex_t g_render_aff_lock = PTHREAD_MUTEX_INITIALIZER;
+static cpu_set_t g_render_aff_mask;
+static bool g_render_aff_active;
+
+static void render_repin_tid(int32_t tid) {
+    if (tid <= 0) return;
+    cpu_set_t want;
+    pthread_mutex_lock(&g_render_aff_lock);
+    bool active = g_render_aff_active;
+    want = g_render_aff_mask;
+    pthread_mutex_unlock(&g_render_aff_lock);
+    if (!active) return;
+    cpu_set_t cur;
+    CPU_ZERO(&cur);
+    if (sched_getaffinity(tid, sizeof cur, &cur) == 0 && !CPU_EQUAL(&cur, &want))
+        sched_setaffinity(tid, sizeof want, &want);
+}
+
 void plat_render_follow_clock(void) {
     static int on = -1;
     if (on < 0) on = !getenv("LARECOMP_FOLLOW_CLOCK") || atoi(getenv("LARECOMP_FOLLOW_CLOCK"));
@@ -1024,9 +1044,18 @@ void plat_render_follow_clock(void) {
         applied = -1;  // (re-applied below)
     }
     int want = ab == 0 ? 0 : 1;
+    pthread_mutex_lock(&g_render_aff_lock);
+    g_render_aff_active = want != 0 && !CPU_EQUAL(&fast, &any);
+    g_render_aff_mask = fast;
+    pthread_mutex_unlock(&g_render_aff_lock);
     if (applied != want) {
         applied = want;
         sched_setaffinity(0, sizeof(cpu_set_t), want ? &fast : &any);
+    } else if (want && !CPU_EQUAL(&fast, &any)) {
+        cpu_set_t cur;
+        CPU_ZERO(&cur);
+        if (sched_getaffinity(0, sizeof cur, &cur) == 0 && !CPU_EQUAL(&cur, &fast))
+            sched_setaffinity(0, sizeof(cpu_set_t), &fast);
     }
 }
 
@@ -1132,12 +1161,36 @@ static void adpf_work_locked(int slot, uint64_t work_ns, uint64_t target_ns, uin
 
     // Target duration adjustment: default 20% margin (headroom for the governor to ramp clocks up before missing
     // vsync, target ~13.3 ms for 60 fps; LARECOMP_ADPF_MARGIN=n to change, =0 to disable; LARECOMP_ADPF_TARGET_US=n)
-    static int target_override_us = -1, margin_pct = -1;
+    static int target_override_us = -1, margin_pct = -1, max_extra = -1, max_extra_env = 0;
     if (target_override_us < 0) {
         const char *to = getenv("LARECOMP_ADPF_TARGET_US");
         target_override_us = to ? atoi(to) : 0;
         const char *mp = getenv("LARECOMP_ADPF_MARGIN");
         margin_pct = mp ? atoi(mp) : 20;
+        const char *me = getenv("LARECOMP_ADPF_MAX_EXTRA");
+        max_extra_env = (me && *me) ? 1 : 0;
+        max_extra = max_extra_env ? atoi(me) : 6;
+        if (max_extra < 0) max_extra = 0;
+        if (max_extra > 16) max_extra = 16;
+    }
+    // Check live thermal state (reported by reportDeviceStats) to scale down extra ADPF worker threads
+    // and clamp hitch spikes while thermally constrained (prevents CPU over-boost stealing GPU power budget).
+    pthread_mutex_lock(&g_ds_lock);
+    int cur_thermal = g_ds.thermal;
+    float cur_headroom = g_ds.headroom;
+    float cur_batt = g_ds.batt_temp_c;
+    pthread_mutex_unlock(&g_ds_lock);
+    bool adpf_hot = cur_thermal >= 2 || (cur_thermal >= 1 && cur_headroom >= 0.88f) || (cur_batt >= 39.5f);
+    bool adpf_warm = !adpf_hot && (cur_thermal >= 1 || cur_batt >= 38.8f);
+    int eff_max_extra = max_extra;
+    if (!max_extra_env) {
+        int tl_cap = adpf_hot ? 2 : (adpf_warm ? 4 : 6);
+        if (eff_max_extra > tl_cap) eff_max_extra = tl_cap;
+    }
+    static int last_eff_max = -1;
+    if (eff_max_extra != last_eff_max) {
+        last_eff_max = eff_max_extra;
+        if (session[0]) s_extra_dirty = true;
     }
     if (target_override_us > 0) target_ns = (uint64_t)target_override_us * 1000ull;
     else if (margin_pct > 0 && margin_pct < 100) target_ns = target_ns * (100 - margin_pct) / 100;
@@ -1187,13 +1240,14 @@ static void adpf_work_locked(int slot, uint64_t work_ns, uint64_t target_ns, uin
             int nt = 0;
             tids[nt++] = s_presenting_tid;
             tids[nt++] = s_render_tid;
-            for (int i = 0; i < s_nextra; i++)
+            int lim = s_nextra < eff_max_extra ? s_nextra : eff_max_extra;
+            for (int i = 0; i < lim; i++)
                 if (s_extra[i] != s_presenting_tid && s_extra[i] != s_render_tid) tids[nt++] = s_extra[i];
             int r = set_threads(session[0], tids, (size_t)nt);
-            if (r == 0) s_session_threads = nt;
+            if (r == 0) { s_session_threads = nt; render_repin_tid(s_render_tid); }
             else { s_errors++; s_last_error = r; }
             static int nlog;
-            if (nlog++ < 4) LOG("[android] performance hint session: %d threads (the game's busiest too): %s\n", nt, r ? "error" : "ok");
+            if (nlog++ < 8) LOG("[android] performance hint session: %d threads (the game's busiest too): %s\n", nt, r ? "error" : "ok");
             s_extra_dirty = false;
         } else if (s_session_threads < 2 && s_presenting_tid > 0 && s_render_tid > 0) {
             // Add the second thread to the active session
@@ -1226,11 +1280,19 @@ static void adpf_work_locked(int slot, uint64_t work_ns, uint64_t target_ns, uin
         }
         if (gpu_ns && wd) {
             int64_t now = (int64_t)plat_now_ns(), cpu = (int64_t)(work_ns ? work_ns : 1), gpu = (int64_t)gpu_ns;
+            if (adpf_hot && target_ns > 0) {
+                // Anti-death-spiral guard while thermally constrained: clamp transient spikes so ADPF doesn't
+                // slam CPU voltage/clocks at the expense of Mali's thermal budget.
+                int64_t cap = (int64_t)(target_ns * 105ull / 100ull);
+                if (cpu > cap) cpu = cap;
+                if (gpu > cap) gpu = cap;
+            }
             wd_start(wd, now - (cpu > gpu ? cpu : gpu));
             wd_total(wd, cpu > gpu ? cpu : gpu);
             wd_cpu(wd, cpu);
             wd_gpu(wd, gpu);
             int r = report2(session[0], wd);
+            if (s_render_tid > 0) render_repin_tid(s_render_tid);
             if (r != 0) {
                 s_errors++;
                 s_last_error = r;
@@ -1241,7 +1303,13 @@ static void adpf_work_locked(int slot, uint64_t work_ns, uint64_t target_ns, uin
             }
         }
         if (work_ns) {
-            int r = report(session[0], (int64_t)work_ns);
+            uint64_t rep_ns = work_ns;
+            if (adpf_hot && target_ns > 0) {
+                uint64_t cap = target_ns * 105ull / 100ull;
+                if (rep_ns > cap) rep_ns = cap;
+            }
+            int r = report(session[0], (int64_t)rep_ns);
+            if (s_render_tid > 0) render_repin_tid(s_render_tid);
             if (r != 0) {
                 s_errors++;
                 s_last_error = r;

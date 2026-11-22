@@ -491,6 +491,10 @@ static void create_device(void) {
     VkPhysicalDeviceMaintenance5FeaturesKHR maintenance5_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR};
     VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR executable_have = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
+    VkPhysicalDeviceRasterizationOrderAttachmentAccessFeaturesEXT roaa_have = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_FEATURES_EXT};
+    VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT vids_have = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT};
     VkPhysicalDeviceFeatures2 optional = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
 #define QUERY_OPTIONAL(name, feature) do { if (has_ext(ep, ne, name)) { \
         feature.pNext = optional.pNext; optional.pNext = &feature; } } while (0)
@@ -499,10 +503,12 @@ static void create_device(void) {
     QUERY_OPTIONAL(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, fault_have);
     QUERY_OPTIONAL(VK_KHR_MAINTENANCE_5_EXTENSION_NAME, maintenance5_have);
     QUERY_OPTIONAL(VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME, executable_have);
+    QUERY_OPTIONAL(VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME, roaa_have);
+    QUERY_OPTIONAL(VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME, vids_have);
 #undef QUERY_OPTIONAL
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &optional);
 #endif
-    const char *ext[32];
+    const char *ext[64];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
 #ifdef __ANDROID__
@@ -510,7 +516,12 @@ static void create_device(void) {
     // rendering's three, for one). Test switches, each that group's other way on any driver (below 1.3 also as if its
     // extensions were missing, as on Mali's): LARECOMP_NO_DYNAMIC_RENDERING=1, LARECOMP_NO_SYNC2=1, LARECOMP_NO_EDS=1
     // (extended dynamic state 2 too), LARECOMP_NO_EDS2=1
-    bool no_dr = env_on("LARECOMP_NO_DYNAMIC_RENDERING"), no_s2 = env_on("LARECOMP_NO_SYNC2"), no_eds = env_on("LARECOMP_NO_EDS");
+    const char *dr_e = getenv("LARECOMP_NO_DYNAMIC_RENDERING");
+    const char *roaa_e = getenv("LARECOMP_VK_RASTER_ORDER");
+    bool mali_roaa = g_vk.props.vendorID == 0x13B5 && roaa_have.rasterizationOrderColorAttachmentAccess &&
+                     !env_on("LARECOMP_VK_NO_ROAA") && (!roaa_e || atoi(roaa_e) != 0);
+    bool no_dr = dr_e ? (atoi(dr_e) != 0) : mali_roaa;
+    bool no_s2 = env_on("LARECOMP_NO_SYNC2"), no_eds = env_on("LARECOMP_NO_EDS");
     bool no_eds2 = no_eds || env_on("LARECOMP_NO_EDS2");
     bool cg[OPT_N];
     for (int g = 0; g < OPT_N; g++) cg[g] = g_vk.api >= VK_API_VERSION_1_3 || compat_group(ep, ne, g_vk.api, g);
@@ -615,6 +626,45 @@ static void create_device(void) {
     if (g_vk.map_placed) {
         ext[n_ext++] = VK_KHR_MAP_MEMORY_2_EXTENSION_NAME;
         ext[n_ext++] = VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME;
+    }
+    if (has_ext(ep, ne, VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME) &&
+        (roaa_have.rasterizationOrderColorAttachmentAccess || roaa_have.rasterizationOrderDepthAttachmentAccess ||
+         roaa_have.rasterizationOrderStencilAttachmentAccess) &&
+        !env_on("LARECOMP_VK_NO_ROAA")) {
+        g_vk.roaa_color = roaa_have.rasterizationOrderColorAttachmentAccess;
+        g_vk.roaa_depth = roaa_have.rasterizationOrderDepthAttachmentAccess;
+        g_vk.roaa_stencil = roaa_have.rasterizationOrderStencilAttachmentAccess;
+        ext[n_ext++] = VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME;
+    }
+    if (!env_on("LARECOMP_VK_NO_STORE_NONE")) {
+        if (has_ext(ep, ne, VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME)) {
+            g_vk.store_op_none = true;
+            ext[n_ext++] = VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME;
+        } else if (has_ext(ep, ne, VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME)) {
+            g_vk.store_op_none = true;
+            ext[n_ext++] = VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME;
+        }
+    }
+    {
+        // VK_EXT_vertex_input_dynamic_state: moves vertex attribute/stream layout out of PipeKey to dynamic state,
+        // cutting pipeline permutations by >50%. Guard older Mali drivers (< r48 had a stride-binding bug per ANGLE).
+        bool mali_ok = true;
+        if (g_vk.props.vendorID == 0x13B5) {
+            VkPhysicalDeviceDriverProperties dp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+            VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                              .pNext = driver_props ? &dp : NULL};
+            vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
+            const char *r = strstr(dp.driverInfo, ".r");
+            if (!r) r = strstr(dp.driverInfo, " r");
+            int rel = r ? atoi(r + 2) : 0;
+            mali_ok = rel >= 48;
+        }
+        const char *dv_e = getenv("LARECOMP_VK_DYN_VTX");
+        bool want_vids = dv_e ? (atoi(dv_e) != 0) : mali_ok;
+        if (want_vids && has_ext(ep, ne, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME) && vids_have.vertexInputDynamicState) {
+            g_vk.dyn_vtx_input = true;
+            ext[n_ext++] = VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME;
+        }
     }
 #endif
     free(ep);
@@ -912,6 +962,18 @@ static void create_device(void) {
     VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pex = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR, .pipelineExecutableInfo = VK_TRUE};
     if (g_vk.exec_stats) { pex.pNext = f.pNext; f.pNext = &pex; }
+    VkPhysicalDeviceRasterizationOrderAttachmentAccessFeaturesEXT roaa_f = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_FEATURES_EXT,
+        .rasterizationOrderColorAttachmentAccess = g_vk.roaa_color,
+        .rasterizationOrderDepthAttachmentAccess = g_vk.roaa_depth,
+        .rasterizationOrderStencilAttachmentAccess = g_vk.roaa_stencil,
+    };
+    if (g_vk.roaa_color || g_vk.roaa_depth || g_vk.roaa_stencil) { roaa_f.pNext = f.pNext; f.pNext = &roaa_f; }
+    VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT vids_f = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT,
+        .vertexInputDynamicState = VK_TRUE,
+    };
+    if (g_vk.dyn_vtx_input) { vids_f.pNext = f.pNext; f.pNext = &vids_f; }
 #endif
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.qfam,
@@ -924,8 +986,11 @@ static void create_device(void) {
 #ifdef __ANDROID__
     volkLoadDevice(g_vk.dev);
     compat_aliases();
+    if (g_vk.dyn_vtx_input && !vkCmdSetVertexInputEXT) g_vk.dyn_vtx_input = false;
     vk_rp_install();  // (LARECOMP_VK_REPLAY: the draws' recording on a thread of its own - replay.h)
     LOG("[vk] Vulkan %u.%u device, %u extensions\n", VK_API_VERSION_MAJOR(g_vk.api), VK_API_VERSION_MINOR(g_vk.api), n_ext);
+    LOG("[vk-cap] raster-order %d/%d/%d (use %d), store-none %d, dyn-vtx %d\n",
+        g_vk.roaa_color, g_vk.roaa_depth, g_vk.roaa_stencil, vk_roaa_on(), g_vk.store_op_none, g_vk.dyn_vtx_input);
 #endif
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
 
@@ -1918,6 +1983,24 @@ void rt_window_closed(void) {
     quick_exit_handler();  // (ends the process)
 #endif
     exit(0);
+}
+
+// Spec-compliant pixel dependency ordering on Mali tile GPUs (VK_EXT_rasterization_order_attachment_access).
+// LARECOMP_VK_RASTER_ORDER=0 (off), 1 (all passes), 2 (ncolor >= 6 G-buffer/lighting feedback passes; default on Mali).
+int vk_roaa_mode(void) {
+    static int mode = -1;
+    if (mode < 0) {
+        const char *e = getenv("LARECOMP_VK_RASTER_ORDER");
+        bool mali = g_vk.props.vendorID == 0x13B5;
+        int v = e ? atoi(e) : (mali ? 2 : 0);
+        mode = g_vk.roaa_color && !g_vk.dyn_render && (v == 1 || v == 2) ? v : 0;
+    }
+    return mode;
+}
+bool vk_roaa_on(void) { return vk_roaa_mode() != 0; }
+bool vk_roaa_for(uint32_t ncolor) {
+    int m = vk_roaa_mode();
+    return m == 1 || (m == 2 && ncolor >= 6);
 }
 
 #ifdef __ANDROID__

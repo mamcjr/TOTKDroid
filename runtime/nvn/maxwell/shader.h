@@ -51,6 +51,8 @@ typedef struct {
     bool gmem_linear_lookup;  // Qualcomm compute: cached linear GMap lookup avoids its compiler's binary-search failure
     bool early_z;             // fragment: the NVN control section's early-Z-force flag (+0x718; in the padding: older
                               // keys hash as before)
+    uint16_t fb_fetch_mask;   // fragment: bit i -> tex slot i emitted as subpassInput (hardware framebuffer fetch)
+    uint8_t fb_fetch_att[16]; // fragment: color attachment index (0..7) for each bit set in fb_fetch_mask
 } ShaderKey;
 
 typedef struct {
@@ -83,6 +85,7 @@ typedef struct {
     bool uses_tint;        // fragment: reads the per-draw tint (buffer 19, float4[2]) applied to color target 0
     bool uses_rscale;       // reads the resolution-scale table (fragment/compute buffer 18): float4 [0] = render
                             // target scale, [1 + i] = allocation scale of texture i
+    uint16_t fb_fetch_cand_mask;  // fragment: bit i -> statically proven 1:1 current-pixel lookup (fb_fetch_analyze.h)
     uint32_t local_mem;     // bytes of local memory
     uint32_t num_insts;
     char error[256];        // set when translation fails

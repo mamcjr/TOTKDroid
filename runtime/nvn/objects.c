@@ -1743,6 +1743,10 @@ static bool rt_cutscene(void) {
     if (now != last) LOG("[totk] %s\n", (last = now) ? "cutscene: presents held at 30 fps" : "cutscene over");
     return now;
 }
+bool rt_in_cutscene(void) {
+    uint64_t t = atomic_load_explicit(&cutscene_ns, memory_order_relaxed);
+    return t && plat_now_ns() - t < 200000000ull;
+}
 // ... and the frame controller's own pick is 2 then (tools/patches.py, main+0x2db238): some of a cutscene's animation
 // steps by the interval the game believes in, not by the measured time - held at 30 while it believed 1 (a light
 // cutscene frame fits 60) they played in slow motion, and at 60 while it believed 2, fast (2026-10-29).

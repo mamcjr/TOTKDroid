@@ -362,6 +362,52 @@ static int fix_game_fxaa(Cpu *c) {  // strb w9, [x0, #0x18c]
     *(uint8_t *)(uintptr_t)(c->x[0] + 0x18c) = 0;
     return 3;
 }
+// Adaptive Near-Plane Push (TOTK 1.4.3): main+0x628c20 (ldr s0, [x19, #0x134]) loads the render camera's near plane
+// right before storing it into sead::PerspectiveProjection::mNear ([x20 + 0x98]) and rebuilding P / invP / cbuf 0.
+// TOTK uses Standard-Z (D32_SFLOAT, LESS_OR_EQUAL) with near=0.10 m and far=25000 m (250,000:1 ratio), leaving only
+// ~3.73 cm/ULP at 250 m and ~15 cm/ULP at 500 m (visible Z-fighting bands on distant waterfall foam & ground slabs).
+// Pushing near to 0.90 m in normal 3rd-person play (9x depth precision, close to BOTW's native 1.0 m) and smoothly
+// up to 1.50 m when zoomed in with Scope (fovy < 34 deg, 15x precision = 2.5 mm/ULP at 250 m) keeps every shader's
+// depth linearization, fog, water, SSAO, and lighting 100% consistent at 0 GPU cost without VK_EXT_depth_clip_control.
+// Does NOT modify [x19 + 0x134] in memory so exiting Scope restores immediately and CPU camera collision stays untouched.
+// LARECOMP_NEAR_MIN=<metres> (default 0.90; 0 = off), LARECOMP_NEAR_ZOOM=<metres> (default 1.50).
+bool rt_in_cutscene(void);   // nvn/objects.c
+bool widescreen_talk(void);  // hle/widescreen.c
+static int fix_near_plane(Cpu *c) {  // ldr s0, [x19, #0x134]
+    static float near_min = -1.0f, near_zoom = -1.0f;
+    if (near_min < 0.0f) {
+        const char *e = getenv("LARECOMP_NEAR_MIN");
+        near_min = e ? (float)atof(e) : 0.90f;
+        const char *ez = getenv("LARECOMP_NEAR_ZOOM");
+        near_zoom = ez ? (float)atof(ez) : 1.50f;
+        if (near_zoom < near_min) near_zoom = near_min;
+    }
+    if (near_min <= 0.0f) return 0;
+    float near_v, far_v, fovy;
+    memcpy(&near_v, (const void *)(uintptr_t)(c->x[19] + 0x134), 4);
+    memcpy(&far_v, (const void *)(uintptr_t)(c->x[19] + 0x138), 4);
+    memcpy(&fovy, (const void *)(uintptr_t)(c->x[19] + 0x13c), 4);
+    // Guard: only touch 3D world cameras (far >= 1000 m, standard near ~0.1 m, valid perspective fovy)
+    if (!(far_v >= 1000.0f && near_v >= 0.04f && near_v < near_zoom && fovy > 0.05f && fovy < 2.5f)) return 0;
+    if (rt_in_cutscene() || widescreen_talk()) return 0;  // never clip close-up dialogue / cutscene faces
+    float target = near_min;
+    if (fovy < 0.60f && near_zoom > near_min) {
+        float t = (0.60f - fovy) / 0.30f;
+        if (t > 1.0f) t = 1.0f;
+        t = t * t * (3.0f - 2.0f * t);
+        target = near_min + (near_zoom - near_min) * t;
+    }
+    if (near_v >= target) return 0;
+    static int nlog;
+    static float last_logged = -1.0f;
+    if (nlog < 8 && (last_logged < 0.0f || target - last_logged > 0.25f || last_logged - target > 0.25f)) {
+        nlog++;
+        last_logged = target;
+        LOG("[totk] near plane %.2f -> %.2f m (far %.0f m, fovy %.1f deg)\n", near_v, target, far_v, fovy * 57.29578f);
+    }
+    vset(c, 0, target);
+    return 3;
+}
 static int fix_far_clamp(Cpu *c) {  // ldr s0, [x19, #0x138]
     int shadow, fxaa;
     float far_cap, far;
@@ -498,6 +544,7 @@ static const Fix fixes[] = {  // (canonical addresses, 0x7000000000 + the offset
     {143, 0x70002b036c, 0, 0x0f016681, fix_cooldown, "equipment-switch cooldown"},
     {143, 0x70006835a4, 0x7000683604, 0x1e38024b, fix_shadow_size, "shadow map size"},
     {143, 0x7000586944, 0, 0x39063009, fix_game_fxaa, "the game's FXAA"},
+    {143, 0x7000628c20, 0, 0xbd413660, fix_near_plane, "render near plane"},
     {143, 0x7000628c30, 0, 0xbd413a60, fix_far_clamp, "render far plane"},
     {143, 0x70002db2b8, 0, 0xb940128c, fix_hyst_limit, "frame controller over-budget limit"},
     {143, 0x70002db354, 0, 0xb940168c, fix_hyst_cooldown12, "frame controller cooldown"},
