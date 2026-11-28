@@ -285,7 +285,8 @@ VkDescriptorSetLayout vk_set_layout(const VkBindingInfo *b, int n, uint32_t set,
 static const char *builtin_src(const char *name, int *stage) {
     if (!strcmp(name, "present.vert")) {
         *stage = STAGE_VERTEX;
-        // pv[0].x: flip (lower-left origin), pv[1]: uv crop (origin, size). Fullscreen triangle; Vulkan NDC y points down.
+        // pv[0].x: flip (lower-left origin), pv[0].y: turn a quarter (1: the window's right edge at the image's top, 2:
+        // its left: device.c pre-rotation), pv[1]: uv crop (origin, size). Fullscreen triangle; Vulkan NDC y points down.
         return "#version 450\n"
                "layout(push_constant) uniform P { vec4 a; vec4 crop; } pc;\n"
                "layout(location = 0) out vec2 uv;\n"
@@ -293,6 +294,7 @@ static const char *builtin_src(const char *name, int *stage) {
                "  vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);\n"
                "  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n"
                "  vec2 u = vec2(p.x, pc.a.x > 0.5 ? 1.0 - p.y : p.y);\n"
+               "  if (pc.a.y > 1.5) u = vec2(u.y, 1.0 - u.x); else if (pc.a.y > 0.5) u = vec2(1.0 - u.y, u.x);\n"
                "  uv = pc.crop.xy + u * pc.crop.zw;\n"
                "}\n";
     }

@@ -1109,6 +1109,30 @@ static VkPresentModeKHR present_mode(void) {
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
+#ifdef __ANDROID__
+// Pre-rotation (default on Mali; LARECOMP_PREROTATE=0 / 1): the surface is the panel's portrait one turned a quarter (transform 90 /
+// 270), and an unturned landscape swapchain is turned by the compositor - on the Pixel 9 Pro as GPU (CLIENT)
+// composition every frame, the display hardware not taking it. With it the window images are portrait, made with that
+// transform (scanned out as they are); everything draws as before into landscape images of their own (g_vk.sc_images /
+// sc_views, sc_extent), turned into the window image at the frame's end (exec.c vk_present_rotate).
+static bool prerot;
+static int prerot_mode;  // (present.vert: 1 / 2)
+static VkExtent2D prerot_ext;
+static VkImage prerot_img[VK_MAX_SWAP_IMAGES];
+static VkImageView prerot_view[VK_MAX_SWAP_IMAGES];
+static VmaAllocation prerot_mem[VK_MAX_SWAP_IMAGES];
+static uint32_t prerot_n;
+
+static void prerot_release(void) {  // (after g_vk.sc_views are destroyed: the landscape images and the window images' views)
+    for (uint32_t i = 0; i < prerot_n; i++) {
+        vk_rp_forget_view(prerot_view[i]);
+        vkDestroyImageView(g_vk.dev, prerot_view[i], NULL);
+        vmaDestroyImage(g_vk.vma, g_vk.sc_images[i], prerot_mem[i]);
+    }
+    prerot_n = 0;
+}
+#endif
+
 static void create_swapchain(void) {
     VkSurfaceCapabilitiesKHR caps;
     VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps));
@@ -1119,6 +1143,20 @@ static void create_swapchain(void) {
     // size, turned by the compositor (pre-rotation in the app would spare it that: docs/las/ANDROID-PORT.md, Fase 3)
     VkExtent2D ext = {(uint32_t)w, (uint32_t)h};
     VkSurfaceTransformFlagBitsKHR transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    VkExtent2D real_ext = ext;
+    // (on by default on Mali, where it was measured - Pixel 9 Pro, 2026-11-27: the compositor's GPU pass gone, no
+    // cost in the game's own frame; LARECOMP_PREROTATE=0 / 1: off / on on any GPU)
+    const char *pre_e = getenv("LARECOMP_PREROTATE");
+    bool pre_want = pre_e ? atoi(pre_e) != 0 : g_vk.props.vendorID == 0x13B5;
+    prerot = pre_want && (caps.currentTransform == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR ||
+                          caps.currentTransform == VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR);
+    if (prerot) {
+        transform = caps.currentTransform;
+        real_ext = (VkExtent2D){ext.height, ext.width};
+        prerot_mode = transform == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR ? 2 : 1;  // (90: turn 2 - checked on the Pixel 9 Pro)
+        if (env_on("LARECOMP_PREROTATE_FLIP")) prerot_mode ^= 3;
+        prerot_ext = real_ext;
+    }
     LOG("[vk] swapchain: surface %ux%u transform %#x, window %dx%d, present mode %d, images %u-%u\n", caps.currentExtent.width,
         caps.currentExtent.height, caps.currentTransform, w, h, present_mode(), caps.minImageCount, caps.maxImageCount);
 #else
@@ -1170,13 +1208,20 @@ static void create_swapchain(void) {
     VkSwapchainKHR old = g_vk.swapchain;
     VkSwapchainCreateInfoKHR ci = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_vk.surface, .minImageCount = count,
+#ifdef __ANDROID__
+        .imageFormat = sf.format, .imageColorSpace = sf.colorSpace, .imageExtent = real_ext, .imageArrayLayers = 1,
+#else
         .imageFormat = sf.format, .imageColorSpace = sf.colorSpace, .imageExtent = ext, .imageArrayLayers = 1,
+#endif
         .imageUsage = usage,
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = transform,
         .compositeAlpha = alpha, .presentMode = present_mode(), .clipped = VK_TRUE,
         .oldSwapchain = old};
     VK_CHECK(vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain));
     for (uint32_t i = 0; i < g_vk.sc_count; i++) vk_rp_forget_view(g_vk.sc_views[i]), vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
+#ifdef __ANDROID__
+    prerot_release();
+#endif
     if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
     g_vk.sc_format = sf.format;
     g_vk.sc_extent = ext;
@@ -1185,6 +1230,25 @@ static void create_swapchain(void) {
     if (g_vk.sc_count > VK_MAX_SWAP_IMAGES)
         FATAL("Driver created %u swapchain images; renderer supports at most %d.\n", g_vk.sc_count, VK_MAX_SWAP_IMAGES);
     VK_CHECK(vkGetSwapchainImagesKHR(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, g_vk.sc_images));
+    if (prerot) {
+        for (uint32_t i = 0; i < g_vk.sc_count; i++) {
+            prerot_img[i] = g_vk.sc_images[i];
+            VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = prerot_img[i],
+                                        .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = sf.format,
+                                        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+            VK_CHECK(vkCreateImageView(g_vk.dev, &vi, NULL, &prerot_view[i]));
+            VkImageCreateInfo ci2 = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = sf.format,
+                                     .extent = {ext.width, ext.height, 1}, .mipLevels = 1, .arrayLayers = 1,
+                                     .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                     .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+            VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+            VK_CHECK(vmaCreateImage(g_vk.vma, &ci2, &ai, &g_vk.sc_images[i], &prerot_mem[i], NULL));
+        }
+        prerot_n = g_vk.sc_count;
+        LOG("[vk] pre-rotation: window images %ux%u (transform %#x, turn %d), drawn at %ux%u\n", real_ext.width,
+            real_ext.height, transform, prerot_mode, ext.width, ext.height);
+    }
 #else
     g_vk.sc_count = VK_MAX_SWAP_IMAGES;
     vkGetSwapchainImagesKHR(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, g_vk.sc_images);
@@ -1276,6 +1340,7 @@ static bool android_surface_ready(void) {  // false: no window to draw into now
     WdMark wd_mark = vk_wd_enter(WD_R_SWAPCHAIN, 1);  // (freeze watchdog)
     vkDeviceWaitIdle(g_vk.dev);
     for (uint32_t i = 0; i < g_vk.sc_count; i++) vk_rp_forget_view(g_vk.sc_views[i]), vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
+    prerot_release();
     g_vk.sc_count = 0;
     if (g_vk.swapchain) vkDestroySwapchainKHR(g_vk.dev, g_vk.swapchain, NULL);
     g_vk.swapchain = VK_NULL_HANDLE;
@@ -1444,8 +1509,28 @@ void vk_frame_end(const char *shot_path) {
     vk_end_rendering(cb);
     VkSpan shot = {0};
     if (shot_path) save_window_image(cb, &shot);
-    image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     uint32_t img = cur_frame.image;
+#ifdef __ANDROID__
+    if (prerot && img < prerot_n) {
+        image_barrier(cb, g_vk.sc_images[img], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        image_barrier(cb, prerot_img[img], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = prerot_view[img],
+                                        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                        .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+        VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, prerot_ext}, .layerCount = 1,
+                              .colorAttachmentCount = 1, .pColorAttachments = &ca};
+        vk_begin_rendering(cb, &ri, &g_vk.sc_format, VK_FORMAT_UNDEFINED, VK_SAMPLE_COUNT_1_BIT);
+        VkViewport vp = {0, 0, (float)prerot_ext.width, (float)prerot_ext.height, 0, 1};
+        VkRect2D sc = {{0, 0}, prerot_ext};
+        vkCmdSetViewport(cb, 0, 1, &vp);
+        vkCmdSetScissor(cb, 0, 1, &sc);
+        extern void vk_present_rotate(VkCommandBuffer cb, VkImageView src, int mode);
+        vk_present_rotate(cb, g_vk.sc_views[img], prerot_mode);
+        vk_end_rendering(cb);
+        image_barrier(cb, prerot_img[img], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    } else
+#endif
+    image_barrier(cb, g_vk.sc_images[img], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     if (!done_sem[img]) done_sem[img] = binary_semaphore();
     uint64_t seq = vk_pending_seq();
     vk_submit_extra(cur_frame.acquired, done_sem[img], VK_NULL_HANDLE);

@@ -11119,6 +11119,23 @@ void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, floa
     vkCmdSetViewport(cb, 0, 1, &full);
 }
 
+// Pre-rotation (device.c vk_frame_end): the landscape window image src into the portrait window image whose rendering
+// is begun, turned a quarter (mode 1 / 2, present.vert), texel for texel.
+void vk_present_rotate(VkCommandBuffer cb, VkImageView src, int mode) {
+    VkPipeline p = present_pipeline(g_vk.sc_format);
+    VkDescriptorSet ds = vk_alloc_set(present_set_layout);
+    VkDescriptorImageInfo ii = {vk_default_sampler(false), src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1,
+                              .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii};
+    vkUpdateDescriptorSets(g_vk.dev, 1, &w, 0, NULL);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, present_layout, 0, 1, &ds, 0, NULL);
+    float pv[8] = {0, (float)mode, 0, 0, 0, 0, 1, 1};
+    vkCmdPushConstants(cb, present_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pv);
+    ss_forget();
+    vkCmdDraw(cb, 3, 1, 0, 0);
+}
+
 // Screenshot of a game texture (presented crop applied to build/frame_* shots), via the present shader into RGBA8.
 // (debug frame, LARECOMP_DEBUG_RAW_PASSES=1) a color target's texels as they are, level 0 / layer 0: <path>.raw, its
 // Vulkan format and size in the log - the PNGs clip HDR values at 1
