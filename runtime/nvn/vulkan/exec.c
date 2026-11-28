@@ -11072,7 +11072,7 @@ static void scene_upscale(Prog *pr, CmdRec *r) {
         gp_mark(cb, "scene upscale %ux%u -> %ux%u: %s", b->width, b->height, ow, oh, mode == UPSCALE_SGSR1 ? "sgsr1" : "easu");
         if (mode == UPSCALE_SGSR1) {
             float ps[8] = {1.0f / iw, 1.0f / ih, iw, ih, (float)ow, (float)oh};
-            post_pass(cb, "sgsr1.frag", in, 1, o, ps, false);
+            post_pass(cb, AB("sgsrfetch") == 1 ? "sgsr1f.frag" : "sgsr1.frag", in, 1, o, ps, false);
         } else {
             TexBackend *e = post_image(5, ow, oh, b->format);
             float pe[8] = {iw / ow, ih / oh, 0.5f * iw / ow - 0.5f, 0.5f * ih / oh - 0.5f, iw, ih};
@@ -11234,7 +11234,8 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
 // change); LARECOMP_LOG_PACE tags each frame "ab 0/1". Switches: split (no long-pass split), ubo (constant buffers
 // read in place), sgsr (Snapdragon GSR 1 for the scene instead of the setting's upscaler), nobarrier (no barrier at
 // the start of a pass: unsafe, what they cost), copy (feedback copies instead of in-place reads), chunk (submissions
-// every 0.5 ms of translation instead of LARECOMP_VK_CHUNK_US). -1: not under test.
+// every 0.5 ms of translation instead of LARECOMP_VK_CHUNK_US), nosubmit (neither the long-pass split nor the chunks),
+// sgsrfetch (the scene upscale's SGSR 1 with texelFetch, as on Turnip). -1: not under test.
 int vk_ab(const char *what) {
     int n = ab_n;
     static char w[32];

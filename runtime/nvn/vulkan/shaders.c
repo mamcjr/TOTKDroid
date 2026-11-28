@@ -281,6 +281,60 @@ VkDescriptorSetLayout vk_set_layout(const VkBindingInfo *b, int n, uint32_t set,
     return l;
 }
 
+// (sgsr1.frag: all but its texture reads)
+#define SGSR1_BODY \
+        "float fastLanczos2(float x) { float wA = x - 4.0; float wB = x * wA - wA; wA *= wA; return wB * wA; }\n" \
+               "vec2 weightY(float dx, float dy, float c, float std) {\n" \
+               "  float x = (dx * dx + dy * dy) * 0.55 + clamp(abs(c) * std, 0.0, 1.0);\n" \
+               "  float w = fastLanczos2(x);\n" \
+               "  return vec2(w, w * c);\n" \
+               "}\n" \
+               "void main() {\n" \
+               "  vec4 vi = pc.a;\n" \
+               "  vec2 uv = gl_FragCoord.xy / pc.b.xy;\n" \
+               "  vec4 color = bilinear(uv);\n" \
+               "  float alpha = color.w;\n" \
+               "  vec2 imgCoord = uv * vi.zw + vec2(-0.5, 0.5);\n" \
+               "  vec2 imgCoordPixel = floor(imgCoord);\n" \
+               "  vec2 coord = imgCoordPixel * vi.xy;\n" \
+               "  vec2 pl = imgCoord - imgCoordPixel;\n" \
+               "  vec4 left = gatherG(coord);\n" \
+               "  float edgeVote = abs(left.z - left.y) + abs(color.y - left.y) + abs(color.y - left.z);\n" \
+               "  if (edgeVote > EdgeThreshold) {\n" \
+               "    coord.x += vi.x;\n" \
+               "    vec4 right = gatherG(coord + vec2(vi.x, 0.0));\n" \
+               "    vec4 upDown;\n" \
+               "    upDown.xy = gatherG(coord + vec2(0.0, -vi.y)).wz;\n" \
+               "    upDown.zw = gatherG(coord + vec2(0.0, vi.y)).yx;\n" \
+               "    float mean = (left.y + left.z + right.x + right.w) * 0.25;\n" \
+               "    left -= vec4(mean); right -= vec4(mean); upDown -= vec4(mean);\n" \
+               "    color.w = color.y - mean;\n" \
+               "    float sum = abs(left.x) + abs(left.y) + abs(left.z) + abs(left.w) + abs(right.x) + abs(right.y) +\n" \
+               "                abs(right.z) + abs(right.w) + abs(upDown.x) + abs(upDown.y) + abs(upDown.z) + abs(upDown.w);\n" \
+               "    float sumMean = 1.014185e+01 / sum;\n" \
+               "    float std = sumMean * sumMean;\n" \
+               "    vec2 aWY = weightY(pl.x, pl.y + 1.0, upDown.x, std);\n" \
+               "    aWY += weightY(pl.x - 1.0, pl.y + 1.0, upDown.y, std);\n" \
+               "    aWY += weightY(pl.x - 1.0, pl.y - 2.0, upDown.z, std);\n" \
+               "    aWY += weightY(pl.x, pl.y - 2.0, upDown.w, std);\n" \
+               "    aWY += weightY(pl.x + 1.0, pl.y - 1.0, left.x, std);\n" \
+               "    aWY += weightY(pl.x, pl.y - 1.0, left.y, std);\n" \
+               "    aWY += weightY(pl.x, pl.y, left.z, std);\n" \
+               "    aWY += weightY(pl.x + 1.0, pl.y, left.w, std);\n" \
+               "    aWY += weightY(pl.x - 1.0, pl.y - 1.0, right.x, std);\n" \
+               "    aWY += weightY(pl.x - 2.0, pl.y - 1.0, right.y, std);\n" \
+               "    aWY += weightY(pl.x - 2.0, pl.y, right.z, std);\n" \
+               "    aWY += weightY(pl.x - 1.0, pl.y, right.w, std);\n" \
+               "    float finalY = aWY.y / aWY.x;\n" \
+               "    float maxY = max(max(left.y, left.z), max(right.x, right.w));\n" \
+               "    float minY = min(min(left.y, left.z), min(right.x, right.w));\n" \
+               "    float deltaY = clamp(EdgeSharpness * finalY, minY, maxY) - color.w;\n" \
+               "    deltaY = clamp(deltaY, -23.0 / 255.0, 23.0 / 255.0);\n" /* (smooth high contrast input) */ \
+               "    color.xyz = clamp(color.xyz + deltaY, 0.0, 1.0);\n" \
+               "  }\n" \
+               "  o = vec4(color.xyz, alpha);\n" \
+               "}\n"
+
 // ================================================================== built-in shaders
 static const char *builtin_src(const char *name, int *stage) {
     if (!strcmp(name, "present.vert")) {
@@ -647,14 +701,25 @@ static const char *builtin_src(const char *name, int *stage) {
     // sample's (the 3D scene's composite: exec.c scene_upscale), where SGSR writes 1. Its gathers and its bilinear
     // sample are texelFetch here (Vulkan's own rules: texel centers, (i0,j1) (i1,j1) (i1,j0) (i0,j0), clamp): on the 3D
     // scene's A2B10G10R10 image textureGather and the sampler gave Turnip (Adreno 830) a blurred, speckled image, the
-    // same shader through the sampler was right on the RGBA8 final image.
-    if (!strcmp(name, "sgsr1.frag")) {
+    // same shader through the sampler was right on the RGBA8 final image. Elsewhere (Mali: 0.8-0.9 ms of the frame at
+    // 2008x896 -> 2142x960, 4-20 texelFetch a pixel) the sampler's bilinear and textureGather, as SGSR has them;
+    // LARECOMP_SGSR_FETCH=1: the texelFetch version everywhere; "sgsr1f.frag" is always it (LARECOMP_AB=<n>:sgsrfetch).
+    if (!strcmp(name, "sgsr1.frag") || !strcmp(name, "sgsr1f.frag")) {
         *stage = STAGE_FRAGMENT;
-        return "#version 450\n"
-               "layout(set = 0, binding = 0) uniform sampler2D ps0;\n"
-               "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
-               "layout(location = 0) out vec4 o;\n"
-               "const float EdgeThreshold = 8.0 / 255.0, EdgeSharpness = 2.0;\n"
+        extern bool vk_driver_is_turnip(void);
+        bool fetch = name[5] == 'f' || vk_driver_is_turnip() || (getenv("LARECOMP_SGSR_FETCH") && atoi(getenv("LARECOMP_SGSR_FETCH")) != 0);
+#define SGSR1_HEAD                                                                                                     \
+    "#version 450\n"                                                                                                   \
+    "layout(set = 0, binding = 0) uniform sampler2D ps0;\n"                                                            \
+    "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"                                                        \
+    "layout(location = 0) out vec4 o;\n"                                                                               \
+    "const float EdgeThreshold = 8.0 / 255.0, EdgeSharpness = 2.0;\n"
+        if (!fetch)
+            return SGSR1_HEAD
+               "vec4 bilinear(vec2 uv) { return texture(ps0, uv); }\n"
+               "vec4 gatherG(vec2 uv) { return textureGather(ps0, uv, 1); }\n"
+               SGSR1_BODY;
+        return SGSR1_HEAD
                "vec4 tx(ivec2 p) { return texelFetch(ps0, clamp(p, ivec2(0), ivec2(pc.a.zw) - 1), 0); }\n"
                "vec4 bilinear(vec2 uv) {\n"
                "  vec2 x = uv * pc.a.zw - 0.5, f = fract(x);\n"
@@ -665,57 +730,7 @@ static const char *builtin_src(const char *name, int *stage) {
                "  ivec2 i = ivec2(floor(uv * pc.a.zw - 0.5));\n"
                "  return vec4(tx(i + ivec2(0, 1)).g, tx(i + ivec2(1, 1)).g, tx(i + ivec2(1, 0)).g, tx(i).g);\n"
                "}\n"
-               "float fastLanczos2(float x) { float wA = x - 4.0; float wB = x * wA - wA; wA *= wA; return wB * wA; }\n"
-               "vec2 weightY(float dx, float dy, float c, float std) {\n"
-               "  float x = (dx * dx + dy * dy) * 0.55 + clamp(abs(c) * std, 0.0, 1.0);\n"
-               "  float w = fastLanczos2(x);\n"
-               "  return vec2(w, w * c);\n"
-               "}\n"
-               "void main() {\n"
-               "  vec4 vi = pc.a;\n"
-               "  vec2 uv = gl_FragCoord.xy / pc.b.xy;\n"
-               "  vec4 color = bilinear(uv);\n"
-               "  float alpha = color.w;\n"
-               "  vec2 imgCoord = uv * vi.zw + vec2(-0.5, 0.5);\n"
-               "  vec2 imgCoordPixel = floor(imgCoord);\n"
-               "  vec2 coord = imgCoordPixel * vi.xy;\n"
-               "  vec2 pl = imgCoord - imgCoordPixel;\n"
-               "  vec4 left = gatherG(coord);\n"
-               "  float edgeVote = abs(left.z - left.y) + abs(color.y - left.y) + abs(color.y - left.z);\n"
-               "  if (edgeVote > EdgeThreshold) {\n"
-               "    coord.x += vi.x;\n"
-               "    vec4 right = gatherG(coord + vec2(vi.x, 0.0));\n"
-               "    vec4 upDown;\n"
-               "    upDown.xy = gatherG(coord + vec2(0.0, -vi.y)).wz;\n"
-               "    upDown.zw = gatherG(coord + vec2(0.0, vi.y)).yx;\n"
-               "    float mean = (left.y + left.z + right.x + right.w) * 0.25;\n"
-               "    left -= vec4(mean); right -= vec4(mean); upDown -= vec4(mean);\n"
-               "    color.w = color.y - mean;\n"
-               "    float sum = abs(left.x) + abs(left.y) + abs(left.z) + abs(left.w) + abs(right.x) + abs(right.y) +\n"
-               "                abs(right.z) + abs(right.w) + abs(upDown.x) + abs(upDown.y) + abs(upDown.z) + abs(upDown.w);\n"
-               "    float sumMean = 1.014185e+01 / sum;\n"
-               "    float std = sumMean * sumMean;\n"
-               "    vec2 aWY = weightY(pl.x, pl.y + 1.0, upDown.x, std);\n"
-               "    aWY += weightY(pl.x - 1.0, pl.y + 1.0, upDown.y, std);\n"
-               "    aWY += weightY(pl.x - 1.0, pl.y - 2.0, upDown.z, std);\n"
-               "    aWY += weightY(pl.x, pl.y - 2.0, upDown.w, std);\n"
-               "    aWY += weightY(pl.x + 1.0, pl.y - 1.0, left.x, std);\n"
-               "    aWY += weightY(pl.x, pl.y - 1.0, left.y, std);\n"
-               "    aWY += weightY(pl.x, pl.y, left.z, std);\n"
-               "    aWY += weightY(pl.x + 1.0, pl.y, left.w, std);\n"
-               "    aWY += weightY(pl.x - 1.0, pl.y - 1.0, right.x, std);\n"
-               "    aWY += weightY(pl.x - 2.0, pl.y - 1.0, right.y, std);\n"
-               "    aWY += weightY(pl.x - 2.0, pl.y, right.z, std);\n"
-               "    aWY += weightY(pl.x - 1.0, pl.y, right.w, std);\n"
-               "    float finalY = aWY.y / aWY.x;\n"
-               "    float maxY = max(max(left.y, left.z), max(right.x, right.w));\n"
-               "    float minY = min(min(left.y, left.z), min(right.x, right.w));\n"
-               "    float deltaY = clamp(EdgeSharpness * finalY, minY, maxY) - color.w;\n"
-               "    deltaY = clamp(deltaY, -23.0 / 255.0, 23.0 / 255.0);\n"  // (smooth high contrast input)
-               "    color.xyz = clamp(color.xyz + deltaY, 0.0, 1.0);\n"
-               "  }\n"
-               "  o = vec4(color.xyz, alpha);\n"
-               "}\n";
+               SGSR1_BODY;
     }
     // FSR 1 RCAS: contrast-adaptive sharpening of the EASU output (same size). a.x = sharpness (exp2(-stops)),
     // b.xy = image size. The lobe is limited so the result stays inside the neighbours' range; noise is damped.
