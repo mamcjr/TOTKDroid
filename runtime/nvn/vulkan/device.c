@@ -563,21 +563,34 @@ static void create_device(void) {
 #endif
     g_vk.host_import = has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);  // guest heap as a GPU buffer (exec.c)
 #ifdef __ANDROID__
+    // Phones: the import pins all of the guest heap. Samsung's Xclipse driver took it and then failed the first
+    // submission (VK_ERROR_UNKNOWN, Galaxy S26, in LASRecomp-Android-Plus). On ARM Mali (r54p1+) with >= 7 GB RAM,
+    // host import gives zero-copy guest heap access without uncached CPU mappings; LARECOMP_VK_HOST_IMPORT=0/1
+    // overrides it.
+    if (g_vk.host_import) {
+        const char *hi = getenv("LARECOMP_VK_HOST_IMPORT");
+        bool want = false;
+        if (hi && *hi) want = env_on("LARECOMP_VK_HOST_IMPORT");
+        else if (g_vk.props.vendorID == 0x13B5 && !strstr(g_vk.props.deviceName, "Mali-G2-Ultra") && g_settings.gpu_heap != 0) {
+            long total_kb = 0;
+            FILE *mf = fopen("/proc/meminfo", "r");
+            if (mf) {
+                if (fscanf(mf, "MemTotal: %ld kB", &total_kb) != 1) total_kb = 0;
+                fclose(mf);
+            }
+            want = total_kb >= 7L * 1024 * 1024;
+        }
+        if (!want) {
+            LOG("[vk-cap] external memory host left out: the heap through CPU copies (LARECOMP_VK_HOST_IMPORT=1: import)\n");
+            g_vk.host_import = false;
+        } else {
+            LOG("[vk-cap] external memory host enabled on %s\n", g_vk.props.deviceName);
+        }
+    }
     // Mali-G2-Ultra (Xring O3, driver r56p0): with the import and the global-memory arena (exec.c gres_init) the game's
-    // text went missing from every menu; with both off it is all there (BOTWRecompAndroid issue #44). The arena off
-    // there unless LARECOMP_VK_NO_GRES says otherwise (the import is off on every phone, below).
-    // Every Mali whose driver offers the import (r54p1 and later) the same: the text missing and grey blocks on a
-    // Mali-G1-Ultra r54p1 (BOTWRecompAndroid #121) with the arena on; the drivers without it (r49p1 and older) keep it.
+    // text went missing from every menu; with both off it is all there (BOTWRecompAndroid issue #44).
     if (strstr(g_vk.props.deviceName, "Mali-G2-Ultra") || (g_vk.props.vendorID == 0x13B5 && g_vk.host_import))
         setenv("LARECOMP_VK_NO_GRES", "1", 0);
-    // Phones: the import pins all of the guest heap. Samsung's Xclipse driver took it and then failed the first
-    // submission (VK_ERROR_UNKNOWN, Galaxy S26, in LASRecomp-Android-Plus), and Mali drivers offer the extension too;
-    // Adreno's own driver doesn't. The CPU copies (exec.c gcopy) run everywhere. LARECOMP_VK_HOST_IMPORT=1: the import
-    // where the driver offers it.
-    if (g_vk.host_import && !env_on("LARECOMP_VK_HOST_IMPORT")) {
-        LOG("[vk-cap] external memory host left out: the heap through CPU copies (LARECOMP_VK_HOST_IMPORT=1: import)\n");
-        g_vk.host_import = false;
-    }
 #endif
     if (g_vk.host_import) ext[n_ext++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
     bool fault = has_ext(ep, ne, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);  // device-lost diagnostics (vk_device_fault_report)
@@ -805,7 +818,7 @@ static void create_device(void) {
         // drivers without placed maps (Mali): its shaders reach every block by pointer.
         const char *ahb_mode = getenv("LARECOMP_VK_MEMFD_AHB");
         g_vk.bda = g_vk.api >= VK_API_VERSION_1_2 && h12.bufferDeviceAddress &&
-                   (g_vk.map_placed || (ahb_mode && atoi(ahb_mode) == 3));
+                   (g_vk.map_placed || g_vk.host_import || (ahb_mode && atoi(ahb_mode) == 3));
         f12.bufferDeviceAddress = g_vk.bda;
         // nor 16-bit storage: no translated or built-in shader declares it, and the Adreno 610 under Turnip lacks it
         // (LAS Recomp's issue #4). LARECOMP_VK_NO_STORAGE16=1 (test): as if it lacked it.
@@ -2030,7 +2043,7 @@ bool vk_adreno_7xx_8xx(const char *name);
 // CPU copies (~850 MB/s); on, 27.6-30 fps at 720p, GPU 33 -> 16 ms, picture the same. LAS's wrong text and colors on a
 // 750 were another game's (the 8xx-only Automatic came from LASRecompAndroid). Below ~7 GB of RAM it stays off anyway
 // (exec.c vk_heap_place).
-bool vk_heap_auto(void) { return vk_adreno_7xx_8xx(g_vk.props.deviceName); }
+bool vk_heap_auto(void) { return vk_adreno_7xx_8xx(g_vk.props.deviceName) || (g_vk.props.vendorID == 0x13B5 && g_vk.host_import); }
 // A Turnip path's setting (-1 Automatic, 1 on, 0 off) for this GPU
 bool vk_turnip_path_on(int setting) { return setting < 0 ? vk_heap_auto() : setting != 0; }
 

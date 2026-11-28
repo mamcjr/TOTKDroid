@@ -1713,7 +1713,7 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
 }
 
 void renderer_mark_gpu_owned(NvnTexture *t) { tex_backend(t)->gpu_owned = true; }
-bool renderer_is_gpu_owned(NvnTexture *t) { return tex_backend(t)->gpu_owned; }
+bool renderer_is_gpu_owned(NvnTexture *t) { return t && t->backend && ((TexBackend *)t->backend)->gpu_owned; }
 
 // ReadTexels of a texture the GPU drew in (from totk-android's read_texels, MIT; the code is ours): its contents live in
 // the Vulkan image, and the guest's memory holds only what the CPU put there (or the small targets' write-backs) - so
