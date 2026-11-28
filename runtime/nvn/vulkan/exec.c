@@ -1063,7 +1063,7 @@ static VkCommandBuffer vk_cmd_rp(void) {
     if (!s->main_begun) {
         begin_cb(s, &s->main, &s->main_begun);
         ss_forget();  // (a new command buffer starts with no state)
-        if (vk_counter_mode() == 2) {  // this slot's timing counter queries (reset outside any render pass)
+        if (vk_counter_mode() == 2 || g_settings.res_mode == RES_DYNAMIC) {  // this slot's timing counter queries (reset outside any render pass; Dynamic resolution: its start and end)
             CounterQ *q = &cq[cur_sub];
             if (!q->pool) {
                 VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP,
@@ -1221,7 +1221,9 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     if (dchain_after) vk_full_barrier(s->main);  // (the barrier a chained storing dispatch still owes, from BOTWRecomp 7845d58)
     dchain = dchain_after = false;
 #ifdef __ANDROID__
-    if (vk_counter_mode() == 2 && cq[cur_sub].pool) {  // the submission's end (cq_resolve: the idle between submissions)
+    // the submission's end (cq_resolve: the idle between submissions, and the GPU's busy time - which Dynamic resolution
+    // needs too: TOTK's counters are frozen, mode 1, and without it the scale only probed upwards blind)
+    if ((vk_counter_mode() == 2 || g_settings.res_mode == RES_DYNAMIC) && cq[cur_sub].pool) {
         vkCmdWriteTimestamp2(s->main, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, cq[cur_sub].pool, CQ_MAX + 1);
         pthread_mutex_lock(&cq_lock);
         cq[cur_sub].ts = true;

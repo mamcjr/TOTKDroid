@@ -1621,7 +1621,15 @@ void backend_present(NvnTexture *t) {
                 LOG("[widescreen] frame %llu: window %.0f x %.0f\n", (unsigned long long)total_frames, dw, dh);
             last_dw = dw, last_dh = dh;
         }
-        output_scale(dw, dh, widescreen_allowed(), SDL_GetTicksNS() / 1e9, -1, &os);
+        // (the last frame's GPU busy time from the submissions' timestamps, for Dynamic resolution: with it the scene
+        // goes back up when the GPU has room instead of probing blind - Android, exec.c vk_frame_gpu_ms; -1 elsewhere)
+#ifdef __ANDROID__
+        extern double vk_frame_gpu_ms(void);
+        double gpu_ms = vk_frame_gpu_ms();
+#else
+        double gpu_ms = -1;
+#endif
+        output_scale(dw, dh, widescreen_allowed(), SDL_GetTicksNS() / 1e9, gpu_ms, &os);
         {
             static double last_shape = -1;
             if (os.shape != last_shape && getenv("LARECOMP_LOG_ASPECT"))
@@ -2262,6 +2270,14 @@ void ui_window_init(void) {
     create_device();
 #ifdef __ANDROID__
     if (strcmp(g_settings.gpu_model, g_vk.props.deviceName)) {  // (for turnip_lrz's Automatic at the next start)
+        // A first start on a Mali (no GPU recorded yet, the resolution still the default 1x): Dynamic resolution. A
+        // Pixel 9 Pro's Mali-G715 throttles to a third of its clock within minutes, and at 1x the Great Sky Island's
+        // woods fell from 29 to 18.5 fps; Dynamic (with the GPU's frame time, output_scale.c) held 28-30 and goes back to
+        // full resolution wherever there is room. Players who chose a resolution keep it.
+        if (!g_settings.gpu_model[0] && g_vk.props.vendorID == 0x13B5 && g_settings.res_mode == 1) {
+            g_settings.res_mode = RES_DYNAMIC;
+            LOG("[vk] first start on a Mali GPU: internal resolution Dynamic\n");
+        }
         snprintf(g_settings.gpu_model, sizeof g_settings.gpu_model, "%s", g_vk.props.deviceName);
         settings_save();
     }

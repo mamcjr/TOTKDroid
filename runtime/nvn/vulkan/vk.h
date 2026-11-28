@@ -137,7 +137,8 @@ typedef struct TexBackend {
     uint64_t rt_frame;  // the last frame a draw rendered into it, + 1 (0: never) - exec.c rt_one_off
     bool rt_oneoff;     // (that frame's draws into it: not drawn into the frame before)
     uint32_t level_gen;
-    float sx, sy;
+    float sx, sy;    // the output scale it was allocated at (rs_stale)
+    float asx, asy;  // its allocation's actual size over the guest's (what draws and shaders scale by)
     void *pending_rgba;  // host-produced pixels (video) waiting to be uploaded on the render thread
     uint32_t pending_w, pending_h, pending_stride;
     uint8_t astc_bw, astc_bh;  // ASTC without GPU support: decoded to RGBA8 on upload (runtime/nvn/astc.c)

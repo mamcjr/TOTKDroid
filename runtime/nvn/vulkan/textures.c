@@ -424,7 +424,7 @@ bool renderer_texture_presented(NvnTexture *t) {
 
 void renderer_texture_scale(NvnTexture *t, float *sx, float *sy) {
     TexBackend *b = t ? (TexBackend *)t->backend : NULL;
-    if (b && b->scalable) { *sx = b->sx; *sy = b->sy; }
+    if (b && b->scalable) { *sx = b->asx; *sy = b->asy; }
     else { *sx = 1; *sy = 1; }
 }
 
@@ -520,9 +520,15 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     b->sy = g_rs[b->rs_group][1];
     uint32_t tw = t->width ? t->width : 1, th = t->height ? t->height : 1;
     if (b->scalable) {
+        // Draws and shaders scale by the allocation's actual ratio (asx/asy), not the nominal one: the rounding differs
+        // between sizes. TOTK's 100x56 lighting-tile buffers at 0.64 of 900 lines on a 20:9 screen became 80x36 (a
+        // ratio of 0.643, not 0.64) next to a 1285x573 scene: tiles read off the ones written, dark rectangles on the
+        // ground at the scales Dynamic resolution picks (Pixel 9 Pro, Lookout Landing and the Temple of Time, 2026-11-27)
+        uint32_t gw = tw, gh = th;
         tw = (uint32_t)lroundf(tw * b->sx); th = (uint32_t)lroundf(th * b->sy);
         if (tw < 1) tw = 1;
         if (th < 1) th = 1;
+        b->asx = (float)tw / (float)gw; b->asy = (float)th / (float)gh;
     }
     VkImageType type = VK_IMAGE_TYPE_2D;
     uint32_t layers = 1, depth = 1;
