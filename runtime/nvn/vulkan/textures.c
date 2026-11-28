@@ -1233,11 +1233,19 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     const FormatInfo *fi = t->layout.fmt;
     if (!fi || !fi->bpb) return;
     VkFmt mf = fmt_of(t->format);
+    extern uint64_t nvn_linear_rt_pitch(uint64_t row_bytes);
+    bool linear = (t->flags & 0x50) != 0;
+#define LIN_STRIDE(row_bytes) ((t->flags & 0x10) ? t->stride : nvn_linear_rt_pitch(row_bytes))
     uint64_t total = tegra_total_size(&t->layout);
+    if (linear && t->layout.levels == 1 && t->layout.layers <= 1 && t->layout.depth <= 1) {
+        LevelLayout l0 = tegra_level(&t->layout, 0);
+        uint64_t lin_total = LIN_STRIDE((uint64_t)l0.wb * fi->bpb) * l0.hb;
+        if (lin_total && lin_total < total) total = lin_total;
+    }
     b->checked_frame = frame;
     prof_tex_checks++;
     bool suspect = __atomic_load_n(&b->check_suspect, __ATOMIC_ACQUIRE) && __atomic_exchange_n(&b->check_suspect, 0, __ATOMIC_ACQ_REL);
-    if (t->flags & 0x10) b->dynamic = true;
+    if (linear) b->dynamic = true;
     if (full_hash_budget_frame != frame) { full_hash_budget_frame = frame; full_hash_budget = 4 << 20; }
     const uint8_t *mem = (const uint8_t *)(uintptr_t)t->addr;
     static int always_full = -1;
@@ -1340,7 +1348,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     if (calm_linear < 0) calm_linear = getenv("LARECOMP_TEX_CALM_LINEAR") && atoi(getenv("LARECOMP_TEX_CALM_LINEAR"));
     extern int vk_ab(const char *what);
     bool calm = fast && dyn_every > 1 && b->dynamic && b->uploaded && total >= DYN_LARGE && b->same_run >= DYN_CALM &&
-                !restyle && !always_full && !written && (calm_linear || !(t->flags & 0x10)) && vk_ab("texcalm") != 0;
+                !restyle && !always_full && !written && (calm_linear || !linear) && vk_ab("texcalm") != 0;
     if (calm && (frame + ((uintptr_t)b >> 6)) % (uint64_t)dyn_every && tex_hash_sample(mem, total) == b->dyn_sample) {
         prof_tex_calm_bytes += total;
         return;
@@ -1453,9 +1461,6 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     // Linear render targets use the row alignment reported by device property 57, just as CPU writeback does.
     // Their builder stride is not authoritative. TotK's 260-wide R16 height maps have 520 useful bytes per row
     // but a 640-byte pitch; treating them as packed rows feeds unrelated heights to the displacement shader.
-    extern uint64_t nvn_linear_rt_pitch(uint64_t row_bytes);
-    bool linear = (t->flags & 0x50) != 0;
-#define LIN_STRIDE(row_bytes) ((t->flags & 0x10) ? t->stride : nvn_linear_rt_pitch(row_bytes))
     uint32_t levels = t->layout.levels < b->levels + b->skip ? t->layout.levels : b->levels + b->skip;  // (guest levels; b->skip: the image starts at that one)
     for (uint32_t layer = 0; layer < layers; layer++) {
         for (uint32_t lv = b->skip; lv < levels; lv++) {
