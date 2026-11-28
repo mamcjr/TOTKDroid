@@ -424,7 +424,7 @@ bool renderer_texture_presented(NvnTexture *t) {
 
 void renderer_texture_scale(NvnTexture *t, float *sx, float *sy) {
     TexBackend *b = t ? (TexBackend *)t->backend : NULL;
-    if (b && b->scalable) { *sx = b->sx; *sy = b->sy; }
+    if (b && b->scalable) { *sx = b->asx; *sy = b->asy; }
     else { *sx = 1; *sy = 1; }
 }
 
@@ -520,9 +520,15 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     b->sy = g_rs[b->rs_group][1];
     uint32_t tw = t->width ? t->width : 1, th = t->height ? t->height : 1;
     if (b->scalable) {
+        // Draws and shaders scale by the allocation's actual ratio (asx/asy), not the nominal one: the rounding differs
+        // between sizes. TOTK's 100x56 lighting-tile buffers at 0.64 of 900 lines on a 20:9 screen became 80x36 (a
+        // ratio of 0.643, not 0.64) next to a 1285x573 scene: tiles read off the ones written, dark rectangles on the
+        // ground at the scales Dynamic resolution picks (Pixel 9 Pro, Lookout Landing and the Temple of Time, 2026-11-27)
+        uint32_t gw = tw, gh = th;
         tw = (uint32_t)lroundf(tw * b->sx); th = (uint32_t)lroundf(th * b->sy);
         if (tw < 1) tw = 1;
         if (th < 1) th = 1;
+        b->asx = (float)tw / (float)gw; b->asy = (float)th / (float)gh;
     }
     VkImageType type = VK_IMAGE_TYPE_2D;
     uint32_t layers = 1, depth = 1;
@@ -1233,11 +1239,19 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     const FormatInfo *fi = t->layout.fmt;
     if (!fi || !fi->bpb) return;
     VkFmt mf = fmt_of(t->format);
+    extern uint64_t nvn_linear_rt_pitch(uint64_t row_bytes);
+    bool linear = (t->flags & 0x50) != 0;
+#define LIN_STRIDE(row_bytes) ((t->flags & 0x10) ? t->stride : nvn_linear_rt_pitch(row_bytes))
     uint64_t total = tegra_total_size(&t->layout);
+    if (linear && t->layout.levels == 1 && t->layout.layers <= 1 && t->layout.depth <= 1) {
+        LevelLayout l0 = tegra_level(&t->layout, 0);
+        uint64_t lin_total = LIN_STRIDE((uint64_t)l0.wb * fi->bpb) * l0.hb;
+        if (lin_total && lin_total < total) total = lin_total;
+    }
     b->checked_frame = frame;
     prof_tex_checks++;
     bool suspect = __atomic_load_n(&b->check_suspect, __ATOMIC_ACQUIRE) && __atomic_exchange_n(&b->check_suspect, 0, __ATOMIC_ACQ_REL);
-    if (t->flags & 0x10) b->dynamic = true;
+    if (linear) b->dynamic = true;
     if (full_hash_budget_frame != frame) { full_hash_budget_frame = frame; full_hash_budget = 4 << 20; }
     const uint8_t *mem = (const uint8_t *)(uintptr_t)t->addr;
     static int always_full = -1;
@@ -1340,7 +1354,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     if (calm_linear < 0) calm_linear = getenv("LARECOMP_TEX_CALM_LINEAR") && atoi(getenv("LARECOMP_TEX_CALM_LINEAR"));
     extern int vk_ab(const char *what);
     bool calm = fast && dyn_every > 1 && b->dynamic && b->uploaded && total >= DYN_LARGE && b->same_run >= DYN_CALM &&
-                !restyle && !always_full && !written && (calm_linear || !(t->flags & 0x10)) && vk_ab("texcalm") != 0;
+                !restyle && !always_full && !written && (calm_linear || !linear) && vk_ab("texcalm") != 0;
     if (calm && (frame + ((uintptr_t)b >> 6)) % (uint64_t)dyn_every && tex_hash_sample(mem, total) == b->dyn_sample) {
         prof_tex_calm_bytes += total;
         return;
@@ -1453,9 +1467,6 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     // Linear render targets use the row alignment reported by device property 57, just as CPU writeback does.
     // Their builder stride is not authoritative. TotK's 260-wide R16 height maps have 520 useful bytes per row
     // but a 640-byte pitch; treating them as packed rows feeds unrelated heights to the displacement shader.
-    extern uint64_t nvn_linear_rt_pitch(uint64_t row_bytes);
-    bool linear = (t->flags & 0x50) != 0;
-#define LIN_STRIDE(row_bytes) ((t->flags & 0x10) ? t->stride : nvn_linear_rt_pitch(row_bytes))
     uint32_t levels = t->layout.levels < b->levels + b->skip ? t->layout.levels : b->levels + b->skip;  // (guest levels; b->skip: the image starts at that one)
     for (uint32_t layer = 0; layer < layers; layer++) {
         for (uint32_t lv = b->skip; lv < levels; lv++) {
@@ -1713,7 +1724,7 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
 }
 
 void renderer_mark_gpu_owned(NvnTexture *t) { tex_backend(t)->gpu_owned = true; }
-bool renderer_is_gpu_owned(NvnTexture *t) { return tex_backend(t)->gpu_owned; }
+bool renderer_is_gpu_owned(NvnTexture *t) { return t && t->backend && ((TexBackend *)t->backend)->gpu_owned; }
 
 // ReadTexels of a texture the GPU drew in (from totk-android's read_texels, MIT; the code is ours): its contents live in
 // the Vulkan image, and the guest's memory holds only what the CPU put there (or the small targets' write-backs) - so

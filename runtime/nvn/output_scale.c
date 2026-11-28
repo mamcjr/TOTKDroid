@@ -54,7 +54,10 @@ static void dyn_update(double now, double gpu_ms) {
     g_dyn_n = g_dyn_gpu_n = 0;
     if (now < g_dyn_cool_until) return;
     double prev = g_dyn;
-    bool slow = avg_dt > want * 1.04 || (avg_gpu >= 0 && avg_gpu > want * 0.87);
+    // (with the GPU's time: a slow frame the GPU had room in is the CPU's - a lower scale only blurs it. The Great Sky
+    // Island's woods on a Pixel 9 Pro: frames of 36-38 ms with the GPU at 27-31, and the scale fell to its floor)
+    bool cpu_bound = avg_gpu >= 0 && avg_gpu < want * 0.75;
+    bool slow = (avg_dt > want * 1.04 && !cpu_bound) || (avg_gpu >= 0 && avg_gpu > want * 0.87);
     if (slow) {
         g_dyn = fmax(0.5, g_dyn - (avg_dt > want * 1.3 ? 0.1 : 0.05));
         g_dyn_good = 0;

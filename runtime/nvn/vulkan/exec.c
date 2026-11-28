@@ -424,6 +424,8 @@ uint64_t vk_wd_timeline_value(void) {
 static _Atomic uint64_t g_gmem_store_seq;
 uint64_t vk_last_gmem_store_seq(void) { return atomic_load(&g_gmem_store_seq); }
 static void note_gmem_store(int stage);  // (below: it reads the bound storage buffers)
+static void gmem_flush_pending(void);
+static void gmem_invalidate_done(uint64_t done);
 
 // ---- the game's GPU timing counters (nvnCommandBufferReportCounter, two per frame)
 // The game times its GPU work with these and drops to 30 fps when frames look slow. They used to get the host clock
@@ -572,7 +574,7 @@ static _Atomic int pace_on = -1;
 void vk_pace_frame(void) {
     {   // (write-backs of passes the GPU has finished since: the game may read them this frame)
         uint64_t v = 0;
-        if ((v = vk_completed_seq())) wb_apply(v);
+        if ((v = vk_completed_seq())) { wb_apply(v); gmem_invalidate_done(v); }
     }
     if (pace_on < 0) { const char *e = getenv("LARECOMP_PACE"); pace_on = !e || atoi(e) != 0; }
     static uint64_t last, last_wait;
@@ -954,6 +956,7 @@ void renderer_events_poll(void) {
 
 static void cq_resolve_done(uint64_t done) {  // every slot whose submission is done
     wb_apply(done);
+    gmem_invalidate_done(done);
     pthread_mutex_lock(&cq_lock);
     events_apply(done);
 #ifdef __ANDROID__
@@ -1060,7 +1063,7 @@ static VkCommandBuffer vk_cmd_rp(void) {
     if (!s->main_begun) {
         begin_cb(s, &s->main, &s->main_begun);
         ss_forget();  // (a new command buffer starts with no state)
-        if (vk_counter_mode() == 2) {  // this slot's timing counter queries (reset outside any render pass)
+        if (vk_counter_mode() == 2 || g_settings.res_mode == RES_DYNAMIC) {  // this slot's timing counter queries (reset outside any render pass; Dynamic resolution: its start and end)
             CounterQ *q = &cq[cur_sub];
             if (!q->pool) {
                 VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP,
@@ -1159,6 +1162,7 @@ void vk_devlost_dump(void) {
 }
 static void gp_mark(VkCommandBuffer cb, const char *fmt, ...) {
     if (!g_gpuprof_frame || gp_n >= GP_MAX - 1) return;
+    if (!gp_n && (in_pass || !strncmp(fmt, "present:", 8))) return;  // (vkCmdResetQueryPool must stay outside render passes)
     if (!gp_qp) {
         VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = GP_MAX};
         if (vkCreateQueryPool(g_vk.dev, &qi, NULL, &gp_qp) != VK_SUCCESS) { g_gpuprof_frame = false; return; }
@@ -1204,6 +1208,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     VkCommandBufferSubmitInfo cbs[2];
     int n = 0;
     vc_flush();
+    gmem_flush_pending();
 #ifdef __ANDROID__
     ga_flush_dirty();  // (the arena's CPU writes, before the GPU reads them)
 #endif
@@ -1216,7 +1221,9 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     if (dchain_after) vk_full_barrier(s->main);  // (the barrier a chained storing dispatch still owes, from BOTWRecomp 7845d58)
     dchain = dchain_after = false;
 #ifdef __ANDROID__
-    if (vk_counter_mode() == 2 && cq[cur_sub].pool) {  // the submission's end (cq_resolve: the idle between submissions)
+    // the submission's end (cq_resolve: the idle between submissions, and the GPU's busy time - which Dynamic resolution
+    // needs too: TOTK's counters are frozen, mode 1, and without it the scale only probed upwards blind)
+    if ((vk_counter_mode() == 2 || g_settings.res_mode == RES_DYNAMIC) && cq[cur_sub].pool) {
         vkCmdWriteTimestamp2(s->main, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, cq[cur_sub].pool, CQ_MAX + 1);
         pthread_mutex_lock(&cq_lock);
         cq[cur_sub].ts = true;
@@ -1830,7 +1837,10 @@ static void gate_refresh(void) {
     long mx = 0, maps = gate_maps(&mx);
     uint64_t av = gate_mem_avail_mb();
     int n = g_gate_workers;
-    if (av) n = av < 600 ? 1 : av < 1200 && n > 2 ? 2 : n;
+    // (Mali pipelines take ~0.4 MB vs Turnip's hundreds of MB; holding to 1 under 600 MB stalled all 3 other workers
+    // behind a single cold shaderc compile in Lookout Landing while MemAvailable sat at ~500-580 MB on a 16 GB phone)
+    uint64_t one_mb = g_vk.props.vendorID == 0x13B5 ? 300 : 600;
+    if (av) n = av < one_mb ? 1 : av < 1200 && n > 2 ? 2 : n;
     if (mx > 0 && maps >= 0) {
         if (maps * 100 >= mx * 75) n = 1;
         else if (maps * 100 >= mx * 60 && n > 2) n = 2;
@@ -2026,6 +2036,41 @@ static uint64_t stat_build_wait_ns;
 // head); steal_arg: the object whose still queued job this thread runs itself - the compile queue first, then (a
 // program) the translate queue. A stolen job runs with the host FPCR like the workers' (vk_fpenv.h) and nothing of
 // this thread's is held meanwhile. The gate is bypassed twice over: g_urgent for the workers, no slot taken here.
+// A draw whose pipeline is still building is skipped - the object missing for that frame (causing one-frame missing objects when the camera turns or streams). Most of
+// those builds come from the pipeline cache and take a millisecond or so: wait for them, within a budget per frame
+// (LARECOMP_PIPE_WAIT_US, default 4000, 0: skip as before; never running a build here, so it stays bounded), and skip
+// only past it. Pixel 9 Pro, walking through Lookout Landing, in-run A/B: draws skipped for a building pipeline 428 ->
+// 18, frame time +0.3 ms (inside the noise). LARECOMP_AB=<n>:pipewait: side 0
+// skips as before (a measurement).
+static uint64_t stat_pipewait_ok, stat_pipewait_late;
+static bool wait_built_budget(_Atomic int *state) {
+    static int64_t budget = -1;
+    if (budget < 0) budget = getenv("LARECOMP_PIPE_WAIT_US") ? atoll(getenv("LARECOMP_PIPE_WAIT_US")) * 1000 : (g_vk.props.vendorID == 0x13B5 ? 4000000 : 0);
+    if (!budget) return false;
+    static uint64_t frame = ~0ull;
+    static int64_t spent;
+    uint64_t f = renderer_present_count();
+    if (f != frame) frame = f, spent = 0;
+    if (spent >= budget) return false;
+    uint64_t t0 = plat_now_ns();
+    while (!atomic_load_explicit(state, memory_order_acquire) && (int64_t)(plat_now_ns() - t0) < budget - spent) {
+        struct timespec until;
+        clock_gettime(CLOCK_REALTIME, &until);
+        until.tv_nsec += 500000;
+        if (until.tv_nsec >= 1000000000L) { until.tv_sec++; until.tv_nsec -= 1000000000L; }
+        pthread_mutex_lock(&build_done_lock);
+        if (!atomic_load_explicit(state, memory_order_acquire)) pthread_cond_timedwait(&build_done_cond, &build_done_lock, &until);
+        pthread_mutex_unlock(&build_done_lock);
+    }
+    spent += (int64_t)(plat_now_ns() - t0);
+    bool ok = atomic_load_explicit(state, memory_order_acquire) != 0;
+    if (ok) stat_pipewait_ok++; else stat_pipewait_late++;
+    if (!((stat_pipewait_ok + stat_pipewait_late) & 511))
+        LOG("[vk] pipewait: %llu built in time, %llu skipped past the budget\n", (unsigned long long)stat_pipewait_ok,
+            (unsigned long long)stat_pipewait_late);
+    return ok;
+}
+
 static void wait_built_job(_Atomic int *state, _Atomic int *urgent_flag, void *steal_arg, uint64_t wd_arg) {
     if (atomic_load_explicit(state, memory_order_acquire)) return;
 #ifdef __ANDROID__
@@ -2426,7 +2471,9 @@ static bool depth_none_on(void) {
     static int on = -1;
     if (on < 0) {
         const char *e = getenv("LARECOMP_DEPTH_NONE");
-        on = (e ? atoi(e) != 0 : g_vk.props.vendorID == 0x13B5) && g_vk.dyn_render && g_vk.api >= VK_API_VERSION_1_3;
+        // (classic render passes too: STORE_OP_NONE is core in 1.3 for a VkAttachmentDescription, and rpcompat.c keys
+        // render passes on store ops)
+        on = (e ? atoi(e) != 0 : g_vk.props.vendorID == 0x13B5) && g_vk.api >= VK_API_VERSION_1_3;
         LOG("[vk] depth the pass only reads, not stored: %s\n", on ? "on" : "off");
     }
     return on;
@@ -4402,7 +4449,12 @@ static int pipe_keep(void) {
         const char *e = getenv("LARECOMP_PIPE_KEEP");
         // (every GPU but Adreno's, BOTWRecomp a3db759: an Xclipse 530 reached 8165 pipelines and 1.6 GB of malloc in an
         // hour, BOTW #327)
-        keep = e ? atoi(e) : (g_vk.props.vendorID != 0x5143 || vk_low_ram()) ? 1500 : 0;
+        // (Mali with RAM to spare: 3800 - TOTK's towns use more than 1500, so those were destroyed and built again as
+        // the camera turned, their draws skipped meanwhile: Lookout Landing, 6 minutes walking, 34,678 skipped draws
+        // and 10 eviction rounds at 1500 against 22,291 and none at 3800, for +9% memory mappings (12,755) and +234 MB,
+        // Pixel 9 Pro, 2026-11-27)
+        keep = e ? atoi(e) : g_vk.props.vendorID == 0x13B5 && !vk_low_ram() ? 3800
+                           : (g_vk.props.vendorID != 0x5143 || vk_low_ram()) ? 1500 : 0;
         if (keep > 0) LOG("[vk] pipelines kept: at most %d (the least recently used ones destroyed)\n", keep);
     }
     return keep;
@@ -5188,6 +5240,17 @@ void vk_alias_stats(void) {
     stat_alias_made = stat_alias_renamed = stat_alias_partial = stat_alias_copied = stat_alias_skipped = stat_alias_late = 0;
 }
 
+static bool stencil_writes(void) {
+    if (!st.ds[3]) return false;
+    uint32_t ops = st.ds[5] | (uint32_t)st.ds[6] << 8 | (uint32_t)st.ds[7] << 16;
+    for (int f = 0; f < 2; f++) {
+        if (!(st.stencil_mask[f] & 0xFF)) continue;
+        uint32_t o = f ? ops >> 12 : ops;
+        if ((o & 0xF) >= 2 || ((o >> 4) & 0xF) >= 2 || ((o >> 8) & 0xF) >= 2) return true;
+    }
+    return false;
+}
+
 // draws: attachments written (or a destination bound at all) end the aliases involved
 static void alias_draw_check(Prog *pr) {
     if (!naliases && !nstale) return;
@@ -5203,7 +5266,7 @@ static void alias_draw_check(Prog *pr) {
         if (st.rt.color[i]) alias_before_write(st.rt.color[i], 0, "color target");
     NvnTexture *d = st.rt.depth;
     if (!d) return;
-    bool writes = (st.ds[0] && st.ds[1]) || (st.ds[3] && ((st.stencil_mask[0] | st.stencil_mask[1]) & 0xFF));
+    bool writes = (st.ds[0] && st.ds[1]) || stencil_writes();
     bool is_dst = false;
     for (int i = 0; i < naliases; i++) is_dst |= aliases[i].dst == d;
     if (writes || is_dst) alias_before_write(d, 0, writes ? "depth write" : "dst bound");
@@ -5215,7 +5278,7 @@ static uint32_t draw_writes(const Prog *pr) {
     uint32_t w = 0;
     for (int i = 0; i < st.rt.ncolor; i++)
         if (st.rt.color[i] && ((pr->fs_out_mask >> (i * 4)) & 0xF) && ((st.channel_mask >> (i * 4)) & 0xF)) w |= 1u << i;
-    if (st.rt.depth && ((st.ds[0] && st.ds[1]) || (st.ds[3] && ((st.stencil_mask[0] | st.stencil_mask[1]) & 0xFF)))) w |= 1u << 8;
+    if (st.rt.depth && ((st.ds[0] && st.ds[1]) || stencil_writes())) w |= 1u << 8;
     return w;
 }
 
@@ -5277,6 +5340,16 @@ static void resolve_feedback(Prog *pr, uint32_t draw_written) {
                         g_settings.inplace_reads < 0 ? "automatic" : "settings");
                 }
                 extern int vk_ab(const char *what);
+                // Depth sampled without this draw writing depth/stencil, after an earlier draw in the same pass wrote it:
+                // ending the pass flushes those depth writes behind begin_pass's barrier, and the new pass has no depth
+                // writer (no feedback loop, and no full-screen D32S8 copy on tile GPUs). LARECOMP_FEEDBACK_DEPTH_COPY=1: off.
+                static int dcopy = -1;
+                if (dcopy < 0) dcopy = getenv("LARECOMP_FEEDBACK_DEPTH_COPY") != NULL;
+                if (!g_inplace_copy && !dcopy && bit == (1u << 8) && !(draw_written & bit) && AB("copy") != 1) {
+                    if (in_pass && !st.rt_dirty && (pass_written & bit)) st.rt_dirty = true, stat_inplace_breaks++, prof_dirty[0]++;
+                    stat_feedback_reads++;
+                    continue;
+                }
                 if (!g_inplace_copy && bit && bit < 1u << 8 && AB("copy") != 1) {
                     int si = -1;
                     for (int k = 0; k < 8; k++) if (snap_tex[k] == t) si = k;
@@ -5884,10 +5957,197 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
 static VkBuffer gmem_buf;
 static VkDeviceMemory gmem_mem;
 static uint64_t gmem_size;
+static bool gmem_coherent;
 #ifdef __ANDROID__
 static bool gmem_file;    // (placed through a shared file / the driver's map moved: Driver compatibility's heap_file)
 static bool gmem_placed;  // (gmem_buf is the guest heap itself, usable as a uniform buffer: vk_heap_place)
 #endif
+
+// Non-coherent host-imported heap (Mali: memory type 0xb is DEVICE_LOCAL | HOST_VISIBLE | HOST_CACHED without
+// HOST_COHERENT, and VK_EXT_external_memory_host allocations have no vkMapMemory VA in Mali's driver so
+// vkFlushMappedMemoryRanges / vkInvalidateMappedMemoryRanges cannot be used): clean CPU cache lines directly by
+// host VA before GPU in-place reads, and clean+invalidate CPU cache lines after GPU writes complete.
+#define GMEM_WORDS (((HEAP_MAX >> 16) + 63) / 64)
+static uint64_t gmem_rblk[GMEM_WORDS];
+static bool gmem_rdirty;
+static pthread_mutex_t gmem_inv_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct { uint64_t lo, hi, seq; } gmem_winv[512];
+static _Atomic uint32_t gmem_winv_n;
+
+static inline void host_cache_clean(uint64_t addr, uint64_t size) {
+#ifdef __aarch64__
+    if (!size) return;
+    uint64_t ctr;
+    __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
+    uint64_t step = 4ull << ((ctr >> 16) & 0xf);
+    for (uint64_t p = addr & ~(step - 1); p < addr + size; p += step)
+        __asm__ volatile("dc cvac, %0" :: "r"(p) : "memory");
+#else
+    (void)addr; (void)size;
+#endif
+}
+
+static inline void host_cache_clean_inv(uint64_t addr, uint64_t size) {
+#ifdef __aarch64__
+    if (!size) return;
+    uint64_t ctr;
+    __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
+    uint64_t step = 4ull << ((ctr >> 16) & 0xf);
+    for (uint64_t p = addr & ~(step - 1); p < addr + size; p += step)
+        __asm__ volatile("dc civac, %0" :: "r"(p) : "memory");
+#else
+    (void)addr; (void)size;
+#endif
+}
+
+static inline void host_cache_barrier(void) {
+#ifdef __aarch64__
+    __asm__ volatile("dsb ish" ::: "memory");
+#endif
+}
+
+static void gmem_note_read(uint64_t addr, uint64_t size) {
+    if (gmem_coherent || !gmem_mem || !size || addr >= HEAP_BASE + gmem_size || addr + size <= HEAP_BASE) return;
+    uint64_t lo = addr > HEAP_BASE ? addr - HEAP_BASE : 0;
+    uint64_t hi = addr + size - HEAP_BASE;
+    if (hi > gmem_size) hi = gmem_size;
+    uint64_t b0 = lo >> 16, b1 = (hi - 1) >> 16;
+    for (uint64_t b = b0; b <= b1 && (b >> 6) < GMEM_WORDS; b++)
+        gmem_rblk[b >> 6] |= 1ull << (b & 63);
+    gmem_rdirty = true;
+}
+
+static void gmem_note_sbuf_reads(int stage) {
+    if (gmem_coherent || !gmem_mem) return;
+    for (int i = 0; i < 16; i++) {
+        uint64_t a = st.sbuf[stage][i].addr, sz = st.sbuf[stage][i].size;
+        if (!a || !sz) continue;
+        uint64_t lo = a > HEAP_BASE + 65536 ? a - 65536 : (a > HEAP_BASE ? HEAP_BASE : a);
+        uint64_t hi = a + sz + 65536;
+        gmem_note_read(lo, hi - lo);
+    }
+    int nb = stage == 5 ? 16 : 18;
+    for (int b = 0; b < nb; b++) {
+        uint64_t ua = st.ubuf[stage][b].addr, usz = st.ubuf[stage][b].size;
+        if (!ua || usz < 8 || ua < GUEST_LO || ua + 64 > GUEST_HI) continue;
+        uint64_t nw = (usz < 64 ? usz : 64) >> 3;
+        for (uint64_t w = 0; w < nw; w++) {
+            uint64_t p;
+            memcpy(&p, (const uint8_t *)(uintptr_t)ua + w * 8, 8);
+            if (p >= HEAP_BASE && p < HEAP_BASE + gmem_size)
+                gmem_note_read(p > HEAP_BASE + 65536 ? p - 65536 : HEAP_BASE, 262144);
+        }
+    }
+}
+
+static void gmem_flush_pending(void) {
+    if (!gmem_rdirty) return;
+    gmem_rdirty = false;
+    if (gmem_coherent || !gmem_mem) { memset(gmem_rblk, 0, sizeof gmem_rblk); return; }
+    bool any = false;
+    uint64_t run_lo = ~0ull, run_hi = 0;
+    for (uint32_t w = 0; w < GMEM_WORDS; w++) {
+        uint64_t m = gmem_rblk[w];
+        if (!m) continue;
+        gmem_rblk[w] = 0;
+        while (m) {
+            uint32_t bit = (uint32_t)__builtin_ctzll(m);
+            m &= m - 1;
+            uint64_t lo = ((uint64_t)w * 64 + bit) << 16;
+            if (lo >= gmem_size) break;
+            uint64_t hi = lo + (1ull << 16);
+            if (hi > gmem_size) hi = gmem_size;
+            if (run_lo != ~0ull && lo == run_hi) run_hi = hi;
+            else {
+                if (run_lo != ~0ull) { host_cache_clean(HEAP_BASE + run_lo, run_hi - run_lo); any = true; }
+                run_lo = lo; run_hi = hi;
+            }
+        }
+    }
+    if (run_lo != ~0ull) { host_cache_clean(HEAP_BASE + run_lo, run_hi - run_lo); any = true; }
+    if (any) host_cache_barrier();
+}
+
+static void gmem_note_write(uint64_t addr, uint64_t size) {
+    if (gmem_coherent || !gmem_mem || !size || addr >= HEAP_BASE + gmem_size || addr + size <= HEAP_BASE) return;
+    uint64_t al = 64;
+    uint64_t lo = (addr > HEAP_BASE ? addr - HEAP_BASE : 0) / al * al;
+    uint64_t hi = ((addr + size - HEAP_BASE) + al - 1) / al * al;
+    if (hi > gmem_size) hi = gmem_size;
+#ifdef __ANDROID__
+    plat_write_prepare(HEAP_BASE + lo, hi - lo);
+#endif
+    uint64_t seq = vk_pending_seq();
+    pthread_mutex_lock(&gmem_inv_lock);
+    uint32_t n = atomic_load_explicit(&gmem_winv_n, memory_order_relaxed);
+    if (n && gmem_winv[n - 1].seq == seq &&
+        lo <= gmem_winv[n - 1].hi && hi >= gmem_winv[n - 1].lo) {
+        if (lo < gmem_winv[n - 1].lo) gmem_winv[n - 1].lo = lo;
+        if (hi > gmem_winv[n - 1].hi) gmem_winv[n - 1].hi = hi;
+    } else {
+        if (n == 512) {  // Full: the ranges sorted and merged (a merged range waits for the later of its writes - as the
+            // whole heap did, which this used to fall back to: 45 GB of cache lines every 2 s in the Great Sky Island's
+            // woods, where every dispatch notes the same storage buffers again)
+            for (uint32_t i = 1; i < n; i++) {
+                typeof(gmem_winv[0]) v = gmem_winv[i];
+                uint32_t j = i;
+                while (j && gmem_winv[j - 1].lo > v.lo) { gmem_winv[j] = gmem_winv[j - 1]; j--; }
+                gmem_winv[j] = v;
+            }
+            uint32_t m = 0;
+            for (uint32_t i = 1; i < n; i++) {
+                if (gmem_winv[i].lo <= gmem_winv[m].hi) {
+                    if (gmem_winv[i].hi > gmem_winv[m].hi) gmem_winv[m].hi = gmem_winv[i].hi;
+                    if (gmem_winv[i].seq > gmem_winv[m].seq) gmem_winv[m].seq = gmem_winv[i].seq;
+                } else gmem_winv[++m] = gmem_winv[i];
+            }
+            n = m + 1;
+        }
+        if (n < 512) gmem_winv[n++] = (typeof(gmem_winv[0])){lo, hi, seq};
+        else gmem_winv[n - 1] = (typeof(gmem_winv[0])){0, gmem_size, seq};  // (512 disjoint ranges: the whole heap)
+        atomic_store_explicit(&gmem_winv_n, n, memory_order_release);
+    }
+    pthread_mutex_unlock(&gmem_inv_lock);
+}
+
+static void gmem_invalidate_done(uint64_t done) {
+    if (gmem_coherent || !gmem_mem || !atomic_load_explicit(&gmem_winv_n, memory_order_acquire)) return;
+    struct { uint64_t lo, hi; } inv[512];
+    uint32_t nr = 0;
+    pthread_mutex_lock(&gmem_inv_lock);
+    uint32_t n = atomic_load_explicit(&gmem_winv_n, memory_order_relaxed);
+    uint32_t keep = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        if (gmem_winv[i].seq > done) { gmem_winv[keep++] = gmem_winv[i]; continue; }
+        inv[nr++] = (typeof(inv[0])){gmem_winv[i].lo, gmem_winv[i].hi};
+    }
+    atomic_store_explicit(&gmem_winv_n, keep, memory_order_release);
+    pthread_mutex_unlock(&gmem_inv_lock);
+    // One pass over each byte: the ranges overlap - every storing draw and dispatch notes all its storage buffers whole
+    // (note_gmem_store), the same few large ones again and again, and line by line each was 90% of the game thread in
+    // the Great Sky Island's woods (Mali-G715, simpleperf 2026-11-27). Sorted and merged first.
+    if (nr > 1) {
+        for (uint32_t i = 1; i < nr; i++) {  // (insertion sort: a few dozen ranges, mostly in order)
+            typeof(inv[0]) v = inv[i];
+            uint32_t j = i;
+            while (j && inv[j - 1].lo > v.lo) { inv[j] = inv[j - 1]; j--; }
+            inv[j] = v;
+        }
+        uint32_t m = 0;
+        for (uint32_t i = 1; i < nr; i++) {
+            if (inv[i].lo <= inv[m].hi) { if (inv[i].hi > inv[m].hi) inv[m].hi = inv[i].hi; }
+            else inv[++m] = inv[i];
+        }
+        nr = m + 1;
+    }
+    for (uint32_t k = 0; k < nr; k++) {
+#ifdef __ANDROID__
+        plat_write_prepare(HEAP_BASE + inv[k].lo, inv[k].hi - inv[k].lo);
+#endif
+        host_cache_clean_inv(HEAP_BASE + inv[k].lo, inv[k].hi - inv[k].lo);
+    }
+    if (nr) host_cache_barrier();
+}
 
 // The heap in blocks (vk_heap_place, LARECOMP_VK_MEMFD_AHB=3: an Android hardware buffer per block, as Swap2-Native's
 // pools - the POCO's gralloc refused one 2 GB buffer, and a Mali's has never been asked): each block its own VkBuffer
@@ -5921,7 +6181,7 @@ static bool gpu_buffer_copy(uint64_t src, uint64_t dst, uint64_t size) {
     if (on < 0) on = !getenv("LARECOMP_VK_GPU_BUFCOPY") || atoi(getenv("LARECOMP_VK_GPU_BUFCOPY"));
     bcopy_done_at = 0;  // (below: the GPU's progress asked afresh - an old answer would send the copy to the CPU's wait)
     if (bcopy_npend >= BCOPY_PEND) bcopy_pending(0, 0);  // (full: the done ones dropped first)
-    if (!on || AB("bufcopy") == 0 || !gmem_placed || !size || size > 4096 || bcopy_npend >= BCOPY_PEND) return false;
+    if (!on || AB("bufcopy") == 0 || (!gmem_placed && !(gmem_buf && !gcopy_mode)) || !size || size > 4096 || bcopy_npend >= BCOPY_PEND) return false;
     if (src < HEAP_BASE || src + size > HEAP_BASE + gmem_size || dst < HEAP_BASE || dst + size > HEAP_BASE + gmem_size) return false;
     if (src < dst + size && dst < src + size) return false;
     if (bcopy_pending(src, src + size)) return false;
@@ -5934,7 +6194,9 @@ static bool gpu_buffer_copy(uint64_t src, uint64_t dst, uint64_t size) {
     VkBufferCopy c = {so, dof, size};
     vkCmdCopyBuffer(cb, sb, db, 1, &c);
     vk_full_barrier(cb);
-    if (hch_size) vc_mark_gpu(dst - HEAP_BASE, dst + size - HEAP_BASE);  // (the heap in blocks is write-tracked: no fault for this)
+    gmem_note_read(src, size);
+    gmem_note_write(dst, size);
+    if (hch_size || g_vk.host_import) vc_mark_gpu(dst - HEAP_BASE, dst + size - HEAP_BASE);  // (write-tracked heap: no fault for GPU copy)
     bcopy_pend[bcopy_npend].lo = dst; bcopy_pend[bcopy_npend].hi = dst + size;
     bcopy_pend[bcopy_npend++].seq = vk_pending_seq();
     guest_copy_invalidate(dst, dst + size);
@@ -5954,6 +6216,7 @@ static bool ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out
     VkBuffer hb;
     VkDeviceSize ho;
     if (!heap_at(off, size, &hb, &ho)) return false;
+    gmem_note_read(addr, size);
     *out = (VkDescriptorBufferInfo){hb, ho, size};
     return true;
 }
@@ -6026,6 +6289,7 @@ static bool cbwin_bind(int stage, int k, uint64_t addr, uint64_t size, VkDescrip
     cbw_patch[stage].m[1] = (uint32_t)((first - addr) >> 4);
     cbw_patch[stage].m[2] = (uint32_t)n;
     stat_cbwin++;
+    gmem_note_read(addr, size);
     *out = (VkDescriptorBufferInfo){hb, ho, size};
     return true;
 }
@@ -6033,28 +6297,76 @@ static bool gmem_placed_(void) { return gmem_placed; }
 static uint64_t cbwin_row_(uint64_t addr, uint64_t size) { return cbwin_rows(addr, size); }
 #endif
 
+#ifdef __ANDROID__
+static bool gmem_bda_wanted(uint64_t size);
+static bool gaddr_write(uint64_t a);
+#endif
+
 static bool gmem_import(uint64_t size) {
     PFN_vkGetMemoryHostPointerPropertiesEXT props =
         (PFN_vkGetMemoryHostPointerPropertiesEXT)vkGetDeviceProcAddr(g_vk.dev, "vkGetMemoryHostPointerPropertiesEXT");
+#ifdef __ANDROID__
+    plat_write_prepare(HEAP_BASE, size);
+#endif
     VkMemoryHostPointerPropertiesEXT mp = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
     if (!props || props(g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, (void *)(uintptr_t)HEAP_BASE, &mp) != VK_SUCCESS ||
         !mp.memoryTypeBits)
         return false;
-    VkImportMemoryHostPointerInfoEXT imp = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
-                                            .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
-                                            .pHostPointer = (void *)(uintptr_t)HEAP_BASE};
-    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &imp, .allocationSize = size,
-                               .memoryTypeIndex = (uint32_t)__builtin_ctz(mp.memoryTypeBits)};
-    VkDeviceMemory mem;
-    if (vkAllocateMemory(g_vk.dev, &ai, NULL, &mem) != VK_SUCCESS) return false;
-    VkExternalMemoryBufferCreateInfo eb = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
-                                           .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
-    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &eb, .size = size,
-                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT};
-    VkBuffer buf;
-    if (vkCreateBuffer(g_vk.dev, &bi, NULL, &buf) != VK_SUCCESS) { vkFreeMemory(g_vk.dev, mem, NULL); return false; }
-    vkBindBufferMemory(g_vk.dev, buf, mem, 0);
+    VkBufferUsageFlags base_usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                    VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                                    VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    bool want_bda = false;
+#ifdef __ANDROID__
+    want_bda = g_vk.bda && gmem_bda_wanted(size);
+#endif
+    VkBuffer buf = VK_NULL_HANDLE;
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    bool has_ubo = false, has_bda = false, chosen_coh = false;
+    uint32_t chosen_type = 0;
+    for (int attempt = 0; attempt < 3 && !buf; attempt++) {
+        bool try_bda = want_bda && attempt == 0;
+        bool try_ubo = attempt < 2;
+        VkExternalMemoryBufferCreateInfo eb = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
+                                               .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &eb, .size = size,
+                                 .usage = base_usage | (try_ubo ? VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT : 0) |
+                                          (try_bda ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0)};
+        if (vkCreateBuffer(g_vk.dev, &bi, NULL, &buf) != VK_SUCCESS) { buf = VK_NULL_HANDLE; continue; }
+        VkMemoryRequirements mr;
+        vkGetBufferMemoryRequirements(g_vk.dev, buf, &mr);
+        uint32_t bits = mp.memoryTypeBits & mr.memoryTypeBits;
+        if (!bits) { vkDestroyBuffer(g_vk.dev, buf, NULL); buf = VK_NULL_HANDLE; continue; }
+        VkPhysicalDeviceMemoryProperties pmp;
+        vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &pmp);
+        int type = -1;
+        for (uint32_t j = 0; j < pmp.memoryTypeCount; j++) {
+            if (!(bits & (1u << j))) continue;
+            VkMemoryPropertyFlags f = pmp.memoryTypes[j].propertyFlags;
+            if (type < 0 || (f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) type = (int)j;
+            if ((f & (VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT)) ==
+                (VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT))
+                break;
+        }
+        VkMemoryAllocateFlagsInfo af = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+                                        .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
+        VkImportMemoryHostPointerInfoEXT imp = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
+                                                .pNext = try_bda ? &af : NULL,
+                                                .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+                                                .pHostPointer = (void *)(uintptr_t)HEAP_BASE};
+        VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &imp, .allocationSize = size,
+                                   .memoryTypeIndex = (uint32_t)type};
+        if (vkAllocateMemory(g_vk.dev, &ai, NULL, &mem) != VK_SUCCESS || vkBindBufferMemory(g_vk.dev, buf, mem, 0) != VK_SUCCESS) {
+            vkDestroyBuffer(g_vk.dev, buf, NULL);
+            if (mem) vkFreeMemory(g_vk.dev, mem, NULL);
+            buf = VK_NULL_HANDLE; mem = VK_NULL_HANDLE;
+            continue;
+        }
+        has_ubo = try_ubo;
+        has_bda = try_bda;
+        chosen_type = (uint32_t)type;
+        chosen_coh = (pmp.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+    }
+    if (!buf) return false;
     if (gmem_buf) {  // the heap grew: the old import may still be in use by submitted work
         vk_rp_drain();  // (and by packets the replay thread hasn't recorded yet: replay.h)
         vk_wait_seq(submit_seq);
@@ -6064,7 +6376,25 @@ static bool gmem_import(uint64_t size) {
     gmem_buf = buf;
     gmem_mem = mem;
     gmem_size = size;
-    LOG("[vk] guest heap imported for shader global memory: %llu MB\n", (unsigned long long)(size >> 20));
+    gmem_coherent = chosen_coh;
+    if (!gmem_coherent) { host_cache_clean(HEAP_BASE, size); host_cache_barrier(); }
+#ifdef __ANDROID__
+    gmem_placed = has_ubo;
+    gcopy_mode = false;
+    if (has_bda) {
+        VkBufferDeviceAddressInfo di = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = buf};
+        uint64_t a = vkGetBufferDeviceAddress(g_vk.dev, &di);
+        if (a && gaddr_write(a)) gmem_bda = a;
+    }
+#endif
+    LOG("[vk] guest heap imported for shader global memory: %llu MB (type %u, coherent %d, ubo %d, bda %d)\n",
+        (unsigned long long)(size >> 20), chosen_type, gmem_coherent, has_ubo,
+#ifdef __ANDROID__
+        gmem_bda != 0
+#else
+        0
+#endif
+    );
     return true;
 }
 
@@ -6319,7 +6649,21 @@ bool vk_heap_place(uint64_t size) {
     bool memfd = vk_heap_file_asked(), no_placed = getenv("LARECOMP_VK_NO_PLACED") != NULL;
     if (g_settings.heap_file && !g_vk.mem_fd)
         LOG("[vk] shared-file memory unavailable: driver has no VK_KHR_external_memory_fd; using CPU copies\n");
-    if (!memfd && (!g_vk.map_placed || no_placed)) return NOT_PLACED();
+    if (!memfd && (!g_vk.map_placed || no_placed)) {
+        if (g_vk.host_import && !getenv("LARECOMP_VK_NO_GMEM") &&
+            (getenv("LARECOMP_VK_HOST_IMPORT") || g_settings.gpu_heap != 0)) {
+            uint64_t want = (size + 0xFFFF) & ~0xFFFFull;
+            if (want > HEAP_MAX) want = HEAP_MAX;
+            gmem_tried = size;
+            if (gmem_import(want)) {
+                if (!getenv("LARECOMP_HOST_IMPORT_NO_WT"))
+                    plat_write_tracking_enable(VC_TRACK_LO, HEAP_BASE + HEAP_MAX);
+                return true;
+            }
+            gcopy_mode = !getenv("LARECOMP_VK_NO_GCOPY");
+        }
+        return NOT_PLACED();
+    }
     extern bool vk_turnip_path_on(int setting);
     if (memfd ? g_settings.gpu_heap == 0 : !vk_turnip_path_on(g_settings.gpu_heap)) {
         // (the start screen's Driver compatibility: Automatic: Adreno 7xx and 8xx, device.c vk_heap_auto)
@@ -6521,6 +6865,7 @@ placed_ahb:  // (MEMFD_FAILED: the heap as an Android hardware buffer)
     gmem_buf = buf;
     gmem_mem = mem;
     gmem_size = size;
+    gmem_coherent = type >= 0 && (mp.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
     gmem_placed = true;
     gmem_file = memfd;
     gcopy_mode = false;
@@ -6750,13 +7095,14 @@ static void gfast_prepare(VkCommandBuffer cb) {
     // copy of the ranges and back, with full barriers around each dispatch, only cost time (~3 ms a frame of the
     // overworld's light lists). Only its descriptor's reach is limited (maxStorageBufferRange, 2 GB on Adreno, the
     // heap is larger): the table points into a window of the heap that starts at the first range instead.
-    if (gmem_buf && hch_size) {  // (the heap in blocks: no table - every access by pointer, gmem_w; a window of block 0 bound)
+    if (gmem_buf && (hch_size || gmem_bda)) {  // (the heap in blocks or reached by BDA: no table - every access by pointer; a window bound)
         gmap_tab[GMAP_MAX * 4] = 0;
+        uint64_t whole = hch_size ? hch[0].size : gmem_size;
         uint64_t reach = g_vk.props.limits.maxStorageBufferRange & ~3ull;
-        gfast_win = (VkDescriptorBufferInfo){hch[0].buf, 0, hch[0].size < reach ? hch[0].size : reach};
+        gfast_win = (VkDescriptorBufferInfo){hch_size ? hch[0].buf : gmem_buf, 0, whole < reach ? whole : reach};
         return;
     }
-    if (gmem_buf && !g_vk.host_import && m && m <= GMAP_MAX) {
+    if (gmem_buf && m && m <= GMAP_MAX) {
         uint64_t al = g_vk.props.limits.minStorageBufferOffsetAlignment ? g_vk.props.limits.minStorageBufferOffsetAlignment : 256;
         uint64_t base = r[0].lo / al * al;
         uint64_t reach = g_vk.props.limits.maxStorageBufferRange & ~3ull;
@@ -7757,7 +8103,7 @@ static uint64_t vc_budget(void) {
             if (fscanf(f, "MemTotal: %ld kB", &total_kb) != 1) total_kb = 0;
             fclose(f);
         }
-        b = 768ull << 20;
+        b = g_vk.host_import ? (512ull << 20) : (768ull << 20);
         if (vk_low_ram() && total_kb > 0 && (uint64_t)total_kb * 1024 / 12 < b) b = (uint64_t)total_kb * 1024 / 12;
         if (e && atol(e) > 0) b = (uint64_t)atol(e) << 20;
         LOG("[vk] buffer cache: up to %llu MB on the GPU\n", (unsigned long long)(b >> 20));
@@ -7869,6 +8215,10 @@ static void vc_mark_gpu(uint64_t lo, uint64_t hi) {
 static void note_gmem_store(int stage) {
     atomic_store(&g_gmem_store_seq, vk_pending_seq());
     vtx_hazard = true;  // (the next pass's vertex stage may read it: begin_pass's barrier)
+    if (!gmem_coherent && gmem_mem)
+        for (int i = 0; i < 16; i++)
+            if (st.sbuf[stage][i].addr && st.sbuf[stage][i].size)
+                gmem_note_write(st.sbuf[stage][i].addr, st.sbuf[stage][i].size);
     static long at = -2;
     if (at == -2) at = getenv("LARECOMP_LOG_STORES") ? atol(getenv("LARECOMP_LOG_STORES")) : -1;
     if (at < 0 || (long)renderer_present_count() != at || !st.program) return;
@@ -7910,9 +8260,9 @@ static bool vcache_lookup(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceS
     }
 #ifdef __ANDROID__
     bool cpu_fill = !gmem_buf && gcopy_mode;  // (Qualcomm's driver: filled from the CPU - vc_flush)
-    // (the heap in blocks, no placed maps for the physical memory region: that region's ranges filled from the CPU, by
-    // the write tracking turned on for it alone - vk_heap_place; the heap's as with any placed heap)
-    bool alias_fill = gmem_buf && hch_size;
+    // (the heap in blocks or host-imported, no placed maps for the physical memory region: that region's ranges filled
+    // from the CPU, by the write tracking turned on for it; the heap's as with any placed heap)
+    bool alias_fill = gmem_buf && (hch_size || g_vk.host_import);
 #else
     bool cpu_fill = false, alias_fill = false;
 #endif
@@ -8029,7 +8379,7 @@ void vc_flush(void) {
             if (nc == 64) { nc = 1; cp[0] = (VkBufferCopy){e->lo, 0, e->hi - e->lo}; break; }  // (scattered: the whole range)
             cp[nc++] = (VkBufferCopy){o, o - e->lo, VC_PAGE};
         }
-        if (nc && gmem_buf && e->lo >= VC_HEAP_OFF) {  // (heap entries only: their offsets from the page tables' base -> the heap buffer's)
+        if (nc && gmem_buf && gmem_coherent && e->lo >= VC_HEAP_OFF) {  // (coherent heap entries only: else CPU upload ring)
             for (int k = 0; k < nc; k++) cp[k].srcOffset -= VC_HEAP_OFF;
             heap_copy(cb, e->buf, (uint32_t)nc, cp, true);
         }
@@ -8054,6 +8404,15 @@ void vc_flush(void) {
 // device-local cache above, else read in place - no per-draw copy, no index scan for the copy size. The game fences its
 // CPU writes as on the Switch. Falls back to copies outside the heap or without the import; LARECOMP_VK_COPY_VERTICES=1
 // forces copies.
+static bool vc_any_gpu(uint64_t addr, uint64_t size) {
+    if (!vc_page_gpu || addr < VC_BASE || !size) return false;
+    uint64_t lo = (addr - VC_BASE) / VC_PAGE, hi = (addr - VC_BASE + size + VC_PAGE - 1) / VC_PAGE;
+    if (hi > VC_SPAN / VC_PAGE) hi = VC_SPAN / VC_PAGE;
+    for (uint64_t p = lo; p < hi; p++)
+        if (vc_page_gpu[p]) return true;
+    return false;
+}
+
 static bool guest_direct(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
     static int copy = -1;
     if (copy < 0) copy = getenv("LARECOMP_VK_COPY_VERTICES") != NULL;
@@ -8063,13 +8422,17 @@ static bool guest_direct(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSi
     if (copy) return false;
 #ifdef __ANDROID__
     if (gcopy_mode && !gmem_buf) return vcache_lookup(addr, size, buf, off);  // (heap or physical memory region; else copied)
-    if (hch_size && addr < HEAP_BASE) return vcache_lookup(addr, size, buf, off);  // (the heap in blocks: the region below)
+    if ((hch_size || g_vk.host_import) && addr < HEAP_BASE) return vcache_lookup(addr, size, buf, off);
 #endif
     if (addr < HEAP_BASE) return false;
     if (addr + size > HEAP_BASE + gmem_size && kernel_heap_size() != gmem_tried) { gmem_tried = kernel_heap_size(); gmem_info(); }
     if (!gmem_buf || addr + size > HEAP_BASE + gmem_size) return false;
     if (!hch_size && vcache_lookup(addr, size, buf, off)) return true;  // (in blocks: the heap read in place, untracked)
-    return heap_at(addr - HEAP_BASE, size, buf, off);  // (the heap in blocks: across two of them, copied)
+    if ((gmem_coherent || hch_size || vc_any_gpu(addr, size)) && heap_at(addr - HEAP_BASE, size, buf, off)) {
+        gmem_note_read(addr, size);
+        return true;
+    }
+    return false;
 }
 
 static VkObjectCache compute_cache;  // (compute programs below)
@@ -8140,8 +8503,15 @@ void vk_exec_reset(void) {
         gmem_mem = VK_NULL_HANDLE;
     }
     gmem_size = gmem_tried = 0;
+    gmem_coherent = false;
+    gmem_rdirty = false;
+    memset(gmem_rblk, 0, sizeof gmem_rblk);
+    pthread_mutex_lock(&gmem_inv_lock);
+    atomic_store_explicit(&gmem_winv_n, 0, memory_order_release);
+    pthread_mutex_unlock(&gmem_inv_lock);
     g_inplace_copy = -1;  // (the next boot reads the setting again: resolve_feedback)
 #ifdef __ANDROID__
+    gmem_placed = gmem_file = false;
     gmem_bda = 0;
     gwin_mode = false;  // (from BOTWRecomp 7845d58)
     gfast_win = (VkDescriptorBufferInfo){0};
@@ -8672,12 +9042,17 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     else
 #endif
     if (cp->si->uses_gmem_map) gfast_prepare(cb);
+    if (cp->si->uses_gmem) gmem_note_sbuf_reads(5);
     VkDescriptorSet ds = stage_set(&cp->p, cp->p.set_layout[0], 0, 5, cp->si, NULL, NULL, gx, gy, gz, NULL, NULL, NULL);
     rpCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->pipe);
     rpCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->p.layout, 0, 1, &ds, 0, NULL);
     rpCmdDispatch(cb, gx, gy, gz);
     vtx_hazard = true;  // (a later pass's vertex stage may read what it wrote: begin_pass)
     if (cp->si->uses_gmem_map && cp->si->uses_gmem_store) gfast_finish(cb);
+    else if (cp->si->uses_gmem_store) {
+        if (dchain_ok()) dchain_after = true;
+        else vk_full_barrier(cb);
+    }
 #ifdef __ANDROID__
     if (gc && (cp->si->uses_gmem_store || cs_writes_image(cp->si))) {  // (owes one barrier after it; at once if the buffer changed)
         if (vk_cmd_rp() == cb) dchain_after = true;
@@ -8917,6 +9292,11 @@ static void draw_(CmdRec *r, bool indexed) {
             }
         }
         keep = kkeep;
+        // A draw with neither depth nor stencil test is a screen pass even with the depth buffer still bound - TOTK's
+        // final composite (scene + bloom into a second target, then copied back) is one: skipped while its pipeline
+        // built, the copy-back pasted that target's stale contents (an earlier frame's, or an aliased target's) over the
+        // frame - a dark slab across the sky for a frame (Mali, 2026-11-26).
+        if (!keep && st.rt.depth && st.rt.ncolor && !st.ds[0] && !st.ds[3] && wait_no_depth()) keep = true;
     }
     Prog *pr = get_program(st.program, &vkey, &fkey, keep && urgent_builds_on());  // (after keep: a waited-on program's jobs go first)
     if (pr && keep) wait_built_job(&pr->state, &pr->urgent, pr, pr->code[1]);
@@ -9434,6 +9814,7 @@ static void draw_(CmdRec *r, bool indexed) {
     if (pp->prewarmed) prewarm_first_draw(pp);
 #endif
     if (keep) wait_built_job(&pp->state, NULL, pp, pp->k.prog ? pp->k.prog->code[1] : 0);
+    else if (!atomic_load(&pp->state) && AB("pipewait") != 0) wait_built_budget(&pp->state);
     if (atomic_load(&pp->state) != 1) {
         if (g_debug_frame) LOG("[draw]   skipped: pipeline %s\n", atomic_load(&pp->state) ? "failed" : "still building");
         stat_skipped++;
@@ -9625,6 +10006,8 @@ static void draw_(CmdRec *r, bool indexed) {
         rpCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->layout, 0, 2, sets, nd, dyn);
         stat_set_binds++;
     }
+    if (pr->vi->uses_gmem) gmem_note_sbuf_reads(0);
+    if (pr->fi->uses_gmem) gmem_note_sbuf_reads(1);
     if (pr->vi->uses_gmem_store) vc_mark_sbufs(0), note_gmem_store(0);
     if (pr->fi->uses_gmem_store) vc_mark_sbufs(1), note_gmem_store(1);
 
@@ -10738,7 +11121,7 @@ static void scene_upscale(Prog *pr, CmdRec *r) {
         gp_mark(cb, "scene upscale %ux%u -> %ux%u: %s", b->width, b->height, ow, oh, mode == UPSCALE_SGSR1 ? "sgsr1" : "easu");
         if (mode == UPSCALE_SGSR1) {
             float ps[8] = {1.0f / iw, 1.0f / ih, iw, ih, (float)ow, (float)oh};
-            post_pass(cb, "sgsr1.frag", in, 1, o, ps, false);
+            post_pass(cb, AB("sgsrfetch") == 1 ? "sgsr1f.frag" : "sgsr1.frag", in, 1, o, ps, false);
         } else {
             TexBackend *e = post_image(5, ow, oh, b->format);
             float pe[8] = {iw / ow, ih / oh, 0.5f * iw / ow - 0.5f, 0.5f * ih / oh - 0.5f, iw, ih};
@@ -10783,6 +11166,23 @@ void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, floa
     vkCmdDraw(cb, 3, 1, 0, 0);
     VkViewport full = {0, 0, (float)g_vk.sc_extent.width, (float)g_vk.sc_extent.height, 0, 1};
     vkCmdSetViewport(cb, 0, 1, &full);
+}
+
+// Pre-rotation (device.c vk_frame_end): the landscape window image src into the portrait window image whose rendering
+// is begun, turned a quarter (mode 1 / 2, present.vert), texel for texel.
+void vk_present_rotate(VkCommandBuffer cb, VkImageView src, int mode) {
+    VkPipeline p = present_pipeline(g_vk.sc_format);
+    VkDescriptorSet ds = vk_alloc_set(present_set_layout);
+    VkDescriptorImageInfo ii = {vk_default_sampler(false), src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1,
+                              .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii};
+    vkUpdateDescriptorSets(g_vk.dev, 1, &w, 0, NULL);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, present_layout, 0, 1, &ds, 0, NULL);
+    float pv[8] = {0, (float)mode, 0, 0, 0, 0, 1, 1};
+    vkCmdPushConstants(cb, present_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pv);
+    ss_forget();
+    vkCmdDraw(cb, 3, 1, 0, 0);
 }
 
 // Screenshot of a game texture (presented crop applied to build/frame_* shots), via the present shader into RGBA8.
@@ -10883,7 +11283,8 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
 // change); LARECOMP_LOG_PACE tags each frame "ab 0/1". Switches: split (no long-pass split), ubo (constant buffers
 // read in place), sgsr (Snapdragon GSR 1 for the scene instead of the setting's upscaler), nobarrier (no barrier at
 // the start of a pass: unsafe, what they cost), copy (feedback copies instead of in-place reads), chunk (submissions
-// every 0.5 ms of translation instead of LARECOMP_VK_CHUNK_US). -1: not under test.
+// every 0.5 ms of translation instead of LARECOMP_VK_CHUNK_US), nosubmit (neither the long-pass split nor the chunks),
+// sgsrfetch (the scene upscale's SGSR 1 with texelFetch, as on Turnip). -1: not under test.
 int vk_ab(const char *what) {
     int n = ab_n;
     static char w[32];

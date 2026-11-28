@@ -1007,6 +1007,17 @@ void plat_render_follow_clock(void) {
     uint64_t now = plat_now_ns();
     if (now >= next) {
         next = now + 1000000000ull;
+        static long cap[64];
+        static bool cap_read;
+        if (!cap_read) {  // (exclude little in-order cores, e.g. Cortex-A520 cap=188 on Tensor G4, from the fast set)
+            for (int c = 0; c < 64; c++) {
+                char path[96];
+                snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpu_capacity", c);
+                FILE *f = fopen(path, "re");
+                if (f) { if (fscanf(f, "%ld", &cap[c]) != 1) cap[c] = 0; fclose(f); }
+            }
+            cap_read = true;
+        }
         long mx[64] = {0}, best = 0, low = 0;
         int n = 0;
         for (int c = 0; c < 64; c++) {
@@ -1016,8 +1027,9 @@ void plat_render_follow_clock(void) {
             if (!f) continue;
             if (fscanf(f, "%ld", &mx[c]) != 1) mx[c] = 0;
             fclose(f);
-            if (mx[c] > best) best = mx[c];
-            if (!low || (mx[c] && mx[c] < low)) low = mx[c];
+            bool big = cap[c] == 0 || cap[c] >= 512;
+            if (big && mx[c] > best) best = mx[c];
+            if (big && (!low || (mx[c] && mx[c] < low))) low = mx[c];
             n = c + 1;
         }
         CPU_ZERO(&fast);
@@ -1025,7 +1037,7 @@ void plat_render_follow_clock(void) {
         int k = 0;
         for (int c = 0; c < n; c++) {
             if (mx[c]) CPU_SET(c, &any);
-            if (mx[c] && mx[c] >= best) { CPU_SET(c, &fast); k++; }
+            if ((cap[c] == 0 || cap[c] >= 512) && mx[c] && mx[c] >= best) { CPU_SET(c, &fast); k++; }
         }
         // (the faster ones only when some cores are held at least 10% below them and they are more than two - not the
         // prime pair alone when cool)

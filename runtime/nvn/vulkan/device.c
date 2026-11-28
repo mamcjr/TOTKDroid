@@ -527,7 +527,13 @@ static void create_device(void) {
     // rendering's three, for one). Test switches, each that group's other way on any driver (below 1.3 also as if its
     // extensions were missing, as on Mali's): LARECOMP_NO_DYNAMIC_RENDERING=1, LARECOMP_NO_SYNC2=1, LARECOMP_NO_EDS=1
     // (extended dynamic state 2 too), LARECOMP_NO_EDS2=1
-    bool no_dr = env_on("LARECOMP_NO_DYNAMIC_RENDERING"), no_s2 = env_on("LARECOMP_NO_SYNC2"), no_eds = env_on("LARECOMP_NO_EDS");
+    // Classic render passes by default on Mali (rpcompat.c): r54p3's vkCmdBeginRendering hashes the pass's subpass
+    // description (SHA1) on every begin - ~8% of the render thread in TOTK's towns. Measured on the Pixel 9 Pro,
+    // 2026-11-27: Lookout Landing render thread -1.8..-2.8 ms, frames
+    // over 50 ms -62..-68%; correct in 5 scenes. LARECOMP_NO_DYNAMIC_RENDERING=0 / 1: dynamic / classic on any GPU.
+    const char *dr_e = getenv("LARECOMP_NO_DYNAMIC_RENDERING");
+    bool no_dr = dr_e ? atoi(dr_e) != 0 : g_vk.props.vendorID == 0x13B5;
+    bool no_s2 = env_on("LARECOMP_NO_SYNC2"), no_eds = env_on("LARECOMP_NO_EDS");
     bool no_eds2 = no_eds || env_on("LARECOMP_NO_EDS2");
     bool cg[OPT_N];
     for (int g = 0; g < OPT_N; g++) cg[g] = g_vk.api >= VK_API_VERSION_1_3 || compat_group(ep, ne, g_vk.api, g);
@@ -563,21 +569,34 @@ static void create_device(void) {
 #endif
     g_vk.host_import = has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);  // guest heap as a GPU buffer (exec.c)
 #ifdef __ANDROID__
+    // Phones: the import pins all of the guest heap. Samsung's Xclipse driver took it and then failed the first
+    // submission (VK_ERROR_UNKNOWN, Galaxy S26, in LASRecomp-Android-Plus). On ARM Mali (r54p1+) with >= 7 GB RAM,
+    // host import gives zero-copy guest heap access without uncached CPU mappings; LARECOMP_VK_HOST_IMPORT=0/1
+    // overrides it.
+    if (g_vk.host_import) {
+        const char *hi = getenv("LARECOMP_VK_HOST_IMPORT");
+        bool want = false;
+        if (hi && *hi) want = env_on("LARECOMP_VK_HOST_IMPORT");
+        else if (g_vk.props.vendorID == 0x13B5 && !strstr(g_vk.props.deviceName, "Mali-G2-Ultra") && g_settings.gpu_heap != 0) {
+            long total_kb = 0;
+            FILE *mf = fopen("/proc/meminfo", "r");
+            if (mf) {
+                if (fscanf(mf, "MemTotal: %ld kB", &total_kb) != 1) total_kb = 0;
+                fclose(mf);
+            }
+            want = total_kb >= 7L * 1024 * 1024;
+        }
+        if (!want) {
+            LOG("[vk-cap] external memory host left out: the heap through CPU copies (LARECOMP_VK_HOST_IMPORT=1: import)\n");
+            g_vk.host_import = false;
+        } else {
+            LOG("[vk-cap] external memory host enabled on %s\n", g_vk.props.deviceName);
+        }
+    }
     // Mali-G2-Ultra (Xring O3, driver r56p0): with the import and the global-memory arena (exec.c gres_init) the game's
-    // text went missing from every menu; with both off it is all there (BOTWRecompAndroid issue #44). The arena off
-    // there unless LARECOMP_VK_NO_GRES says otherwise (the import is off on every phone, below).
-    // Every Mali whose driver offers the import (r54p1 and later) the same: the text missing and grey blocks on a
-    // Mali-G1-Ultra r54p1 (BOTWRecompAndroid #121) with the arena on; the drivers without it (r49p1 and older) keep it.
+    // text went missing from every menu; with both off it is all there (BOTWRecompAndroid issue #44).
     if (strstr(g_vk.props.deviceName, "Mali-G2-Ultra") || (g_vk.props.vendorID == 0x13B5 && g_vk.host_import))
         setenv("LARECOMP_VK_NO_GRES", "1", 0);
-    // Phones: the import pins all of the guest heap. Samsung's Xclipse driver took it and then failed the first
-    // submission (VK_ERROR_UNKNOWN, Galaxy S26, in LASRecomp-Android-Plus), and Mali drivers offer the extension too;
-    // Adreno's own driver doesn't. The CPU copies (exec.c gcopy) run everywhere. LARECOMP_VK_HOST_IMPORT=1: the import
-    // where the driver offers it.
-    if (g_vk.host_import && !env_on("LARECOMP_VK_HOST_IMPORT")) {
-        LOG("[vk-cap] external memory host left out: the heap through CPU copies (LARECOMP_VK_HOST_IMPORT=1: import)\n");
-        g_vk.host_import = false;
-    }
 #endif
     if (g_vk.host_import) ext[n_ext++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
     bool fault = has_ext(ep, ne, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);  // device-lost diagnostics (vk_device_fault_report)
@@ -716,7 +735,8 @@ static void create_device(void) {
     // LARECOMP_NO_DYNAMIC_RENDERING=1: render passes on any driver (to test that path).
     g_vk.dyn_render = h13.dynamicRendering && !no_dr;
     if (!g_vk.dyn_render)
-        LOG("[vk] no dynamic rendering (%s): classic render passes\n", no_dr ? "switched off" : "the driver lacks it");
+        LOG("[vk] no dynamic rendering (%s): classic render passes\n",
+            !no_dr ? "the driver lacks it" : dr_e ? "switched off" : "Mali default");
     VkPhysicalDeviceDriverProperties driver = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
     VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
                                               .pNext = driver_props ? &driver : NULL};
@@ -805,7 +825,7 @@ static void create_device(void) {
         // drivers without placed maps (Mali): its shaders reach every block by pointer.
         const char *ahb_mode = getenv("LARECOMP_VK_MEMFD_AHB");
         g_vk.bda = g_vk.api >= VK_API_VERSION_1_2 && h12.bufferDeviceAddress &&
-                   (g_vk.map_placed || (ahb_mode && atoi(ahb_mode) == 3));
+                   (g_vk.map_placed || g_vk.host_import || (ahb_mode && atoi(ahb_mode) == 3));
         f12.bufferDeviceAddress = g_vk.bda;
         // nor 16-bit storage: no translated or built-in shader declares it, and the Adreno 610 under Turnip lacks it
         // (LAS Recomp's issue #4). LARECOMP_VK_NO_STORAGE16=1 (test): as if it lacked it.
@@ -1089,6 +1109,30 @@ static VkPresentModeKHR present_mode(void) {
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
+#ifdef __ANDROID__
+// Pre-rotation (default on Mali; LARECOMP_PREROTATE=0 / 1): the surface is the panel's portrait one turned a quarter (transform 90 /
+// 270), and an unturned landscape swapchain is turned by the compositor - on the Pixel 9 Pro as GPU (CLIENT)
+// composition every frame, the display hardware not taking it. With it the window images are portrait, made with that
+// transform (scanned out as they are); everything draws as before into landscape images of their own (g_vk.sc_images /
+// sc_views, sc_extent), turned into the window image at the frame's end (exec.c vk_present_rotate).
+static bool prerot;
+static int prerot_mode;  // (present.vert: 1 / 2)
+static VkExtent2D prerot_ext;
+static VkImage prerot_img[VK_MAX_SWAP_IMAGES];
+static VkImageView prerot_view[VK_MAX_SWAP_IMAGES];
+static VmaAllocation prerot_mem[VK_MAX_SWAP_IMAGES];
+static uint32_t prerot_n;
+
+static void prerot_release(void) {  // (after g_vk.sc_views are destroyed: the landscape images and the window images' views)
+    for (uint32_t i = 0; i < prerot_n; i++) {
+        vk_rp_forget_view(prerot_view[i]);
+        vkDestroyImageView(g_vk.dev, prerot_view[i], NULL);
+        vmaDestroyImage(g_vk.vma, g_vk.sc_images[i], prerot_mem[i]);
+    }
+    prerot_n = 0;
+}
+#endif
+
 static void create_swapchain(void) {
     VkSurfaceCapabilitiesKHR caps;
     VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps));
@@ -1099,6 +1143,20 @@ static void create_swapchain(void) {
     // size, turned by the compositor (pre-rotation in the app would spare it that: docs/las/ANDROID-PORT.md, Fase 3)
     VkExtent2D ext = {(uint32_t)w, (uint32_t)h};
     VkSurfaceTransformFlagBitsKHR transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    VkExtent2D real_ext = ext;
+    // (on by default on Mali, where it was measured - Pixel 9 Pro, 2026-11-27: the compositor's GPU pass gone, no
+    // cost in the game's own frame; LARECOMP_PREROTATE=0 / 1: off / on on any GPU)
+    const char *pre_e = getenv("LARECOMP_PREROTATE");
+    bool pre_want = pre_e ? atoi(pre_e) != 0 : g_vk.props.vendorID == 0x13B5;
+    prerot = pre_want && (caps.currentTransform == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR ||
+                          caps.currentTransform == VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR);
+    if (prerot) {
+        transform = caps.currentTransform;
+        real_ext = (VkExtent2D){ext.height, ext.width};
+        prerot_mode = transform == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR ? 2 : 1;  // (90: turn 2 - checked on the Pixel 9 Pro)
+        if (env_on("LARECOMP_PREROTATE_FLIP")) prerot_mode ^= 3;
+        prerot_ext = real_ext;
+    }
     LOG("[vk] swapchain: surface %ux%u transform %#x, window %dx%d, present mode %d, images %u-%u\n", caps.currentExtent.width,
         caps.currentExtent.height, caps.currentTransform, w, h, present_mode(), caps.minImageCount, caps.maxImageCount);
 #else
@@ -1150,13 +1208,20 @@ static void create_swapchain(void) {
     VkSwapchainKHR old = g_vk.swapchain;
     VkSwapchainCreateInfoKHR ci = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_vk.surface, .minImageCount = count,
+#ifdef __ANDROID__
+        .imageFormat = sf.format, .imageColorSpace = sf.colorSpace, .imageExtent = real_ext, .imageArrayLayers = 1,
+#else
         .imageFormat = sf.format, .imageColorSpace = sf.colorSpace, .imageExtent = ext, .imageArrayLayers = 1,
+#endif
         .imageUsage = usage,
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = transform,
         .compositeAlpha = alpha, .presentMode = present_mode(), .clipped = VK_TRUE,
         .oldSwapchain = old};
     VK_CHECK(vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain));
     for (uint32_t i = 0; i < g_vk.sc_count; i++) vk_rp_forget_view(g_vk.sc_views[i]), vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
+#ifdef __ANDROID__
+    prerot_release();
+#endif
     if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
     g_vk.sc_format = sf.format;
     g_vk.sc_extent = ext;
@@ -1165,6 +1230,25 @@ static void create_swapchain(void) {
     if (g_vk.sc_count > VK_MAX_SWAP_IMAGES)
         FATAL("Driver created %u swapchain images; renderer supports at most %d.\n", g_vk.sc_count, VK_MAX_SWAP_IMAGES);
     VK_CHECK(vkGetSwapchainImagesKHR(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, g_vk.sc_images));
+    if (prerot) {
+        for (uint32_t i = 0; i < g_vk.sc_count; i++) {
+            prerot_img[i] = g_vk.sc_images[i];
+            VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = prerot_img[i],
+                                        .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = sf.format,
+                                        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+            VK_CHECK(vkCreateImageView(g_vk.dev, &vi, NULL, &prerot_view[i]));
+            VkImageCreateInfo ci2 = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = sf.format,
+                                     .extent = {ext.width, ext.height, 1}, .mipLevels = 1, .arrayLayers = 1,
+                                     .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                     .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+            VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+            VK_CHECK(vmaCreateImage(g_vk.vma, &ci2, &ai, &g_vk.sc_images[i], &prerot_mem[i], NULL));
+        }
+        prerot_n = g_vk.sc_count;
+        LOG("[vk] pre-rotation: window images %ux%u (transform %#x, turn %d), drawn at %ux%u\n", real_ext.width,
+            real_ext.height, transform, prerot_mode, ext.width, ext.height);
+    }
 #else
     g_vk.sc_count = VK_MAX_SWAP_IMAGES;
     vkGetSwapchainImagesKHR(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, g_vk.sc_images);
@@ -1256,6 +1340,7 @@ static bool android_surface_ready(void) {  // false: no window to draw into now
     WdMark wd_mark = vk_wd_enter(WD_R_SWAPCHAIN, 1);  // (freeze watchdog)
     vkDeviceWaitIdle(g_vk.dev);
     for (uint32_t i = 0; i < g_vk.sc_count; i++) vk_rp_forget_view(g_vk.sc_views[i]), vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
+    prerot_release();
     g_vk.sc_count = 0;
     if (g_vk.swapchain) vkDestroySwapchainKHR(g_vk.dev, g_vk.swapchain, NULL);
     g_vk.swapchain = VK_NULL_HANDLE;
@@ -1424,8 +1509,28 @@ void vk_frame_end(const char *shot_path) {
     vk_end_rendering(cb);
     VkSpan shot = {0};
     if (shot_path) save_window_image(cb, &shot);
-    image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     uint32_t img = cur_frame.image;
+#ifdef __ANDROID__
+    if (prerot && img < prerot_n) {
+        image_barrier(cb, g_vk.sc_images[img], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        image_barrier(cb, prerot_img[img], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = prerot_view[img],
+                                        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                        .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+        VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, prerot_ext}, .layerCount = 1,
+                              .colorAttachmentCount = 1, .pColorAttachments = &ca};
+        vk_begin_rendering(cb, &ri, &g_vk.sc_format, VK_FORMAT_UNDEFINED, VK_SAMPLE_COUNT_1_BIT);
+        VkViewport vp = {0, 0, (float)prerot_ext.width, (float)prerot_ext.height, 0, 1};
+        VkRect2D sc = {{0, 0}, prerot_ext};
+        vkCmdSetViewport(cb, 0, 1, &vp);
+        vkCmdSetScissor(cb, 0, 1, &sc);
+        extern void vk_present_rotate(VkCommandBuffer cb, VkImageView src, int mode);
+        vk_present_rotate(cb, g_vk.sc_views[img], prerot_mode);
+        vk_end_rendering(cb);
+        image_barrier(cb, prerot_img[img], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    } else
+#endif
+    image_barrier(cb, g_vk.sc_images[img], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     if (!done_sem[img]) done_sem[img] = binary_semaphore();
     uint64_t seq = vk_pending_seq();
     vk_submit_extra(cur_frame.acquired, done_sem[img], VK_NULL_HANDLE);
@@ -1608,7 +1713,15 @@ void backend_present(NvnTexture *t) {
                 LOG("[widescreen] frame %llu: window %.0f x %.0f\n", (unsigned long long)total_frames, dw, dh);
             last_dw = dw, last_dh = dh;
         }
-        output_scale(dw, dh, widescreen_allowed(), SDL_GetTicksNS() / 1e9, -1, &os);
+        // (the last frame's GPU busy time from the submissions' timestamps, for Dynamic resolution: with it the scene
+        // goes back up when the GPU has room instead of probing blind - Android, exec.c vk_frame_gpu_ms; -1 elsewhere)
+#ifdef __ANDROID__
+        extern double vk_frame_gpu_ms(void);
+        double gpu_ms = vk_frame_gpu_ms();
+#else
+        double gpu_ms = -1;
+#endif
+        output_scale(dw, dh, widescreen_allowed(), SDL_GetTicksNS() / 1e9, gpu_ms, &os);
         {
             static double last_shape = -1;
             if (os.shape != last_shape && getenv("LARECOMP_LOG_ASPECT"))
@@ -2030,7 +2143,7 @@ bool vk_adreno_7xx_8xx(const char *name);
 // CPU copies (~850 MB/s); on, 27.6-30 fps at 720p, GPU 33 -> 16 ms, picture the same. LAS's wrong text and colors on a
 // 750 were another game's (the 8xx-only Automatic came from LASRecompAndroid). Below ~7 GB of RAM it stays off anyway
 // (exec.c vk_heap_place).
-bool vk_heap_auto(void) { return vk_adreno_7xx_8xx(g_vk.props.deviceName); }
+bool vk_heap_auto(void) { return vk_adreno_7xx_8xx(g_vk.props.deviceName) || (g_vk.props.vendorID == 0x13B5 && g_vk.host_import); }
 // A Turnip path's setting (-1 Automatic, 1 on, 0 off) for this GPU
 bool vk_turnip_path_on(int setting) { return setting < 0 ? vk_heap_auto() : setting != 0; }
 
@@ -2249,6 +2362,14 @@ void ui_window_init(void) {
     create_device();
 #ifdef __ANDROID__
     if (strcmp(g_settings.gpu_model, g_vk.props.deviceName)) {  // (for turnip_lrz's Automatic at the next start)
+        // A first start on a Mali (no GPU recorded yet, the resolution still the default 1x): Dynamic resolution. A
+        // Pixel 9 Pro's Mali-G715 throttles to a third of its clock within minutes, and at 1x the Great Sky Island's
+        // woods fell from 29 to 18.5 fps; Dynamic (with the GPU's frame time, output_scale.c) held 28-30 and goes back to
+        // full resolution wherever there is room. Players who chose a resolution keep it.
+        if (!g_settings.gpu_model[0] && g_vk.props.vendorID == 0x13B5 && g_settings.res_mode == 1) {
+            g_settings.res_mode = RES_DYNAMIC;
+            LOG("[vk] first start on a Mali GPU: internal resolution Dynamic\n");
+        }
         snprintf(g_settings.gpu_model, sizeof g_settings.gpu_model, "%s", g_vk.props.deviceName);
         settings_save();
     }
