@@ -29,6 +29,7 @@
 #include "watchdog.h"
 
 enum { REQ_EXEC, REQ_PRESENT, REQ_FENCE, REQ_TEXREG };
+static void snap_buf_put(uint8_t *b);  // (below: a list copy's buffer back to the pool)
 typedef struct { int type; uint64_t a; void *p; uint64_t id; } Req;
 
 #define QN 4096  // requests in flight (a frame has a few dozen)
@@ -106,7 +107,7 @@ static void *render_main(void *arg) {
         if (r.type == REQ_TEXREG) nvn_texreg_apply(r.p);
         else {
             vk_tl(r.type == REQ_EXEC ? "render: list start" : r.type == REQ_PRESENT ? "render: present start" : "render: fence", r.id, 0);
-            if (r.type == REQ_EXEC) { vk_execute_now(r.a); free(r.p); }  // (r.p: the list copy, vk_async_execute)
+            if (r.type == REQ_EXEC) { vk_execute_now(r.a); snap_buf_put(r.p); }  // (r.p: the list copy, vk_async_execute)
             else if (r.type == REQ_PRESENT) vk_present_now((NvnTexture *)r.p);
             if (r.type != REQ_FENCE) vk_tl(r.type == REQ_EXEC ? "render: list end" : "render: present end", r.id, 0);
             else if (r.type == REQ_FENCE) nvn_sync_set_seq(r.a, renderer_fence_seq());
@@ -263,6 +264,44 @@ static void mark_fences(uint64_t p, uint64_t id, int depth) {
 // (deep: a call deeper than 8 was copied as a record, its lists' fences not noted - the copy is walked for them, as
 // mark_fences does; from BOTWRecomp b6c0499)
 typedef struct { uint8_t *b; size_t n, cap; uint64_t *f; size_t nf, capf; bool deep; } Snap;
+
+// The copies' buffers come from a small pool, the render thread giving each back once its list has run: a fresh buffer
+// per list - TOTK's are megabytes - grew by doubling reallocs and was shrunk by another, each copying the list so
+// far, and freed by munmap; a simpleperf of Lookout Landing had the submitting thread spend 2/3 of its time in those
+// copies (2026-11-28). A buffer starts at the last list's size. LARECOMP_AB=<n>:snappool, side 0: a buffer per list.
+#define SNAP_HDR 16  // (the buffer's capacity, before its data)
+static pthread_mutex_t snap_pool_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint8_t *snap_pool[8];
+static int snap_npool;
+static size_t snap_hint = 0x10000;
+static size_t snap_cap(const uint8_t *b) { return *(const size_t *)(b - SNAP_HDR); }
+static bool snap_pool_on(void) { extern int vk_ab(const char *what); return vk_ab("snappool") != 0; }
+static uint8_t *snap_buf_grow(uint8_t *b, size_t want) {
+    uint8_t *h = realloc(b ? b - SNAP_HDR : NULL, SNAP_HDR + want);
+    if (!h) FATAL("vk: out of memory for a command list copy\n");
+    *(size_t *)h = want;
+    return h + SNAP_HDR;
+}
+static uint8_t *snap_buf_get(size_t want) {
+    uint8_t *b = NULL;
+    if (snap_pool_on()) {
+        pthread_mutex_lock(&snap_pool_lock);
+        for (int i = 0; i < snap_npool; i++)
+            if (snap_cap(snap_pool[i]) >= want) { b = snap_pool[i]; snap_pool[i] = snap_pool[--snap_npool]; break; }
+        pthread_mutex_unlock(&snap_pool_lock);
+    }
+    return b ? b : snap_buf_grow(NULL, want);
+}
+static void snap_buf_put(uint8_t *b) {  // (the render thread, a list run)
+    if (!b) return;
+    if (snap_pool_on()) {
+        pthread_mutex_lock(&snap_pool_lock);
+        if (snap_npool < 8) { snap_pool[snap_npool++] = b; b = NULL; }
+        pthread_mutex_unlock(&snap_pool_lock);
+    }
+    if (b) free(b - SNAP_HDR);
+}
+
 static void snap_add(Snap *s, uint64_t p, int depth) {
     for (int guard = 0; guard < 10000000; guard++) {
         const CmdRec *r = (const CmdRec *)(uintptr_t)p;
@@ -284,8 +323,7 @@ static void snap_add(Snap *s, uint64_t p, int depth) {
             }
             if (s->n + r->size > s->cap) {
                 s->cap = (s->n + r->size) * 2 > 0x10000 ? (s->n + r->size) * 2 : 0x10000;
-                s->b = realloc(s->b, s->cap);
-                if (!s->b) FATAL("vk: out of memory for a command list copy\n");
+                s->b = snap_buf_grow(s->b, s->cap);
             }
             memcpy(s->b + s->n, r, r->size);
             s->n += r->size;
@@ -295,10 +333,13 @@ static void snap_add(Snap *s, uint64_t p, int depth) {
 }
 static uint8_t *snap_list(uint64_t handle, Snap *fences) {
     Snap s = {0};
+    bool pool = snap_pool_on();
+    s.b = snap_buf_get(pool ? snap_hint : 0x10000);
+    s.cap = snap_cap(s.b);
     snap_add(&s, handle, 0);
     fences->f = s.f, fences->nf = s.nf, fences->deep = s.deep;
-    s.b = realloc(s.b, s.n + sizeof(CmdRec));
-    if (!s.b) FATAL("vk: out of memory for a command list copy\n");
+    if (s.n + sizeof(CmdRec) > s.cap) s.b = snap_buf_grow(s.b, s.cap = s.n + sizeof(CmdRec));
+    if (pool) snap_hint = (s.n + sizeof(CmdRec)) + (s.n + sizeof(CmdRec)) / 4;  // (the next list: about this one's size)
     memset(s.b + s.n, 0, sizeof(CmdRec));  // CMD_END
     ((CmdRec *)(s.b + s.n))->size = sizeof(CmdRec);
     return s.b;
@@ -308,7 +349,19 @@ void vk_async_execute(uint64_t handle) {
     Snap fences = {0};
     static int no_copy = -1;  // (LARECOMP_NO_LIST_COPY, read once: this runs for every list)
     if (no_copy < 0) no_copy = getenv("LARECOMP_NO_LIST_COPY") != NULL;
+    uint64_t snap_t0 = plat_now_ns();
     uint8_t *copy = no_copy ? NULL : snap_list(handle, &fences);
+    {   // (the copies' time on this thread, per LARECOMP_AB side, logged every 300 lists)
+        extern int vk_ab(const char *what);
+        static uint64_t ns[3], nl[3], total;
+        int side = vk_ab(NULL) + 1;
+        ns[side] += plat_now_ns() - snap_t0, nl[side]++;
+        if (!(++total % 300)) {
+            LOG("[vk] list copies: off %llu lists %.1f ms | ab0 %llu lists %.1f ms | ab1 %llu lists %.1f ms\n",
+                (unsigned long long)nl[0], ns[0] / 1e6, (unsigned long long)nl[1], ns[1] / 1e6, (unsigned long long)nl[2], ns[2] / 1e6);
+            memset(ns, 0, sizeof ns), memset(nl, 0, sizeof nl);
+        }
+    }
     if (copy) handle = (uint64_t)(uintptr_t)copy;
     pthread_mutex_lock(&p_lock);
     push_texregs();
