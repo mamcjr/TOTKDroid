@@ -527,7 +527,13 @@ static void create_device(void) {
     // rendering's three, for one). Test switches, each that group's other way on any driver (below 1.3 also as if its
     // extensions were missing, as on Mali's): LARECOMP_NO_DYNAMIC_RENDERING=1, LARECOMP_NO_SYNC2=1, LARECOMP_NO_EDS=1
     // (extended dynamic state 2 too), LARECOMP_NO_EDS2=1
-    bool no_dr = env_on("LARECOMP_NO_DYNAMIC_RENDERING"), no_s2 = env_on("LARECOMP_NO_SYNC2"), no_eds = env_on("LARECOMP_NO_EDS");
+    // Classic render passes by default on Mali (rpcompat.c): r54p3's vkCmdBeginRendering hashes the pass's subpass
+    // description (SHA1) on every begin - ~8% of the render thread in TOTK's towns. Measured on the Pixel 9 Pro,
+    // 2026-11-27: Lookout Landing render thread -1.8..-2.8 ms, frames
+    // over 50 ms -62..-68%; correct in 5 scenes. LARECOMP_NO_DYNAMIC_RENDERING=0 / 1: dynamic / classic on any GPU.
+    const char *dr_e = getenv("LARECOMP_NO_DYNAMIC_RENDERING");
+    bool no_dr = dr_e ? atoi(dr_e) != 0 : g_vk.props.vendorID == 0x13B5;
+    bool no_s2 = env_on("LARECOMP_NO_SYNC2"), no_eds = env_on("LARECOMP_NO_EDS");
     bool no_eds2 = no_eds || env_on("LARECOMP_NO_EDS2");
     bool cg[OPT_N];
     for (int g = 0; g < OPT_N; g++) cg[g] = g_vk.api >= VK_API_VERSION_1_3 || compat_group(ep, ne, g_vk.api, g);
@@ -729,7 +735,8 @@ static void create_device(void) {
     // LARECOMP_NO_DYNAMIC_RENDERING=1: render passes on any driver (to test that path).
     g_vk.dyn_render = h13.dynamicRendering && !no_dr;
     if (!g_vk.dyn_render)
-        LOG("[vk] no dynamic rendering (%s): classic render passes\n", no_dr ? "switched off" : "the driver lacks it");
+        LOG("[vk] no dynamic rendering (%s): classic render passes\n",
+            !no_dr ? "the driver lacks it" : dr_e ? "switched off" : "Mali default");
     VkPhysicalDeviceDriverProperties driver = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
     VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
                                               .pNext = driver_props ? &driver : NULL};

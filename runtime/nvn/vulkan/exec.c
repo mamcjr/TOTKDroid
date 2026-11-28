@@ -2433,7 +2433,9 @@ static bool depth_none_on(void) {
     static int on = -1;
     if (on < 0) {
         const char *e = getenv("LARECOMP_DEPTH_NONE");
-        on = (e ? atoi(e) != 0 : g_vk.props.vendorID == 0x13B5) && g_vk.dyn_render && g_vk.api >= VK_API_VERSION_1_3;
+        // (classic render passes too: STORE_OP_NONE is core in 1.3 for a VkAttachmentDescription, and rpcompat.c keys
+        // render passes on store ops)
+        on = (e ? atoi(e) != 0 : g_vk.props.vendorID == 0x13B5) && g_vk.api >= VK_API_VERSION_1_3;
         LOG("[vk] depth the pass only reads, not stored: %s\n", on ? "on" : "off");
     }
     return on;
