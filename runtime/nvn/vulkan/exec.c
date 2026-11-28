@@ -1837,7 +1837,10 @@ static void gate_refresh(void) {
     long mx = 0, maps = gate_maps(&mx);
     uint64_t av = gate_mem_avail_mb();
     int n = g_gate_workers;
-    if (av) n = av < 600 ? 1 : av < 1200 && n > 2 ? 2 : n;
+    // (Mali pipelines take ~0.4 MB vs Turnip's hundreds of MB; holding to 1 under 600 MB stalled all 3 other workers
+    // behind a single cold shaderc compile in Lookout Landing while MemAvailable sat at ~500-580 MB on a 16 GB phone)
+    uint64_t one_mb = g_vk.props.vendorID == 0x13B5 ? 300 : 600;
+    if (av) n = av < one_mb ? 1 : av < 1200 && n > 2 ? 2 : n;
     if (mx > 0 && maps >= 0) {
         if (maps * 100 >= mx * 75) n = 1;
         else if (maps * 100 >= mx * 60 && n > 2) n = 2;
@@ -2033,6 +2036,41 @@ static uint64_t stat_build_wait_ns;
 // head); steal_arg: the object whose still queued job this thread runs itself - the compile queue first, then (a
 // program) the translate queue. A stolen job runs with the host FPCR like the workers' (vk_fpenv.h) and nothing of
 // this thread's is held meanwhile. The gate is bypassed twice over: g_urgent for the workers, no slot taken here.
+// A draw whose pipeline is still building is skipped - the object missing for that frame (causing one-frame missing objects when the camera turns or streams). Most of
+// those builds come from the pipeline cache and take a millisecond or so: wait for them, within a budget per frame
+// (LARECOMP_PIPE_WAIT_US, default 4000, 0: skip as before; never running a build here, so it stays bounded), and skip
+// only past it. Pixel 9 Pro, walking through Lookout Landing, in-run A/B: draws skipped for a building pipeline 428 ->
+// 18, frame time +0.3 ms (inside the noise). LARECOMP_AB=<n>:pipewait: side 0
+// skips as before (a measurement).
+static uint64_t stat_pipewait_ok, stat_pipewait_late;
+static bool wait_built_budget(_Atomic int *state) {
+    static int64_t budget = -1;
+    if (budget < 0) budget = getenv("LARECOMP_PIPE_WAIT_US") ? atoll(getenv("LARECOMP_PIPE_WAIT_US")) * 1000 : (g_vk.props.vendorID == 0x13B5 ? 4000000 : 0);
+    if (!budget) return false;
+    static uint64_t frame = ~0ull;
+    static int64_t spent;
+    uint64_t f = renderer_present_count();
+    if (f != frame) frame = f, spent = 0;
+    if (spent >= budget) return false;
+    uint64_t t0 = plat_now_ns();
+    while (!atomic_load_explicit(state, memory_order_acquire) && (int64_t)(plat_now_ns() - t0) < budget - spent) {
+        struct timespec until;
+        clock_gettime(CLOCK_REALTIME, &until);
+        until.tv_nsec += 500000;
+        if (until.tv_nsec >= 1000000000L) { until.tv_sec++; until.tv_nsec -= 1000000000L; }
+        pthread_mutex_lock(&build_done_lock);
+        if (!atomic_load_explicit(state, memory_order_acquire)) pthread_cond_timedwait(&build_done_cond, &build_done_lock, &until);
+        pthread_mutex_unlock(&build_done_lock);
+    }
+    spent += (int64_t)(plat_now_ns() - t0);
+    bool ok = atomic_load_explicit(state, memory_order_acquire) != 0;
+    if (ok) stat_pipewait_ok++; else stat_pipewait_late++;
+    if (!((stat_pipewait_ok + stat_pipewait_late) & 511))
+        LOG("[vk] pipewait: %llu built in time, %llu skipped past the budget\n", (unsigned long long)stat_pipewait_ok,
+            (unsigned long long)stat_pipewait_late);
+    return ok;
+}
+
 static void wait_built_job(_Atomic int *state, _Atomic int *urgent_flag, void *steal_arg, uint64_t wd_arg) {
     if (atomic_load_explicit(state, memory_order_acquire)) return;
 #ifdef __ANDROID__
@@ -4411,7 +4449,12 @@ static int pipe_keep(void) {
         const char *e = getenv("LARECOMP_PIPE_KEEP");
         // (every GPU but Adreno's, BOTWRecomp a3db759: an Xclipse 530 reached 8165 pipelines and 1.6 GB of malloc in an
         // hour, BOTW #327)
-        keep = e ? atoi(e) : (g_vk.props.vendorID != 0x5143 || vk_low_ram()) ? 1500 : 0;
+        // (Mali with RAM to spare: 3800 - TOTK's towns use more than 1500, so those were destroyed and built again as
+        // the camera turned, their draws skipped meanwhile: Lookout Landing, 6 minutes walking, 34,678 skipped draws
+        // and 10 eviction rounds at 1500 against 22,291 and none at 3800, for +9% memory mappings (12,755) and +234 MB,
+        // Pixel 9 Pro, 2026-11-27)
+        keep = e ? atoi(e) : g_vk.props.vendorID == 0x13B5 && !vk_low_ram() ? 3800
+                           : (g_vk.props.vendorID != 0x5143 || vk_low_ram()) ? 1500 : 0;
         if (keep > 0) LOG("[vk] pipelines kept: at most %d (the least recently used ones destroyed)\n", keep);
     }
     return keep;
@@ -9249,6 +9292,11 @@ static void draw_(CmdRec *r, bool indexed) {
             }
         }
         keep = kkeep;
+        // A draw with neither depth nor stencil test is a screen pass even with the depth buffer still bound - TOTK's
+        // final composite (scene + bloom into a second target, then copied back) is one: skipped while its pipeline
+        // built, the copy-back pasted that target's stale contents (an earlier frame's, or an aliased target's) over the
+        // frame - a dark slab across the sky for a frame (Mali, 2026-11-26).
+        if (!keep && st.rt.depth && st.rt.ncolor && !st.ds[0] && !st.ds[3] && wait_no_depth()) keep = true;
     }
     Prog *pr = get_program(st.program, &vkey, &fkey, keep && urgent_builds_on());  // (after keep: a waited-on program's jobs go first)
     if (pr && keep) wait_built_job(&pr->state, &pr->urgent, pr, pr->code[1]);
@@ -9766,6 +9814,7 @@ static void draw_(CmdRec *r, bool indexed) {
     if (pp->prewarmed) prewarm_first_draw(pp);
 #endif
     if (keep) wait_built_job(&pp->state, NULL, pp, pp->k.prog ? pp->k.prog->code[1] : 0);
+    else if (!atomic_load(&pp->state) && AB("pipewait") != 0) wait_built_budget(&pp->state);
     if (atomic_load(&pp->state) != 1) {
         if (g_debug_frame) LOG("[draw]   skipped: pipeline %s\n", atomic_load(&pp->state) ? "failed" : "still building");
         stat_skipped++;
